@@ -39,8 +39,11 @@ var cc = &certCache{
 	},
 }
 
+// NewInTransportClient - generate an http client with sensible deaults
+// that will fetch missing intermediate certificates as needed.
 func NewInTransportClient() *http.Client {
 	return &http.Client{
+		// Defaults from http.DefaultTransport
 		Transport: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
@@ -75,6 +78,19 @@ type InTransport struct {
 	NextVerifyPeerCertificate func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
 }
 
+// VerifyPeerCertificate - this is the method that is to be plugged into
+// tls.Config VerifyPeerCertificate.  If using this method inside of a custom
+// built htttp.Transport, you must also set InsecureSkipVerify to true.  When
+// set to false, a certificate that isn't trusted to the root and has missing
+// intermediate certs will prevent VerifyPeerCertificate from being called.
+// This method will still ensure that a valid chain exists from the presented
+// certificates(s) to a trusted root certificate.  The difference between this
+// and the default TLS verification is that missing intermediates will be
+// fetched until either a valid path to a trusted root is found or no further
+// intermediates can be found.  If a chain cannot be established, the
+// connection will fail .  If a chain can be established, then the optional
+// NextVerifyPeerCertificate() method will be called, if specified.  If this
+// method returns an error, it will stop the connection.
 func (it InTransport) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 	if len(rawCerts) == 0 {
 		return fmt.Errorf("no certificates supplied")
