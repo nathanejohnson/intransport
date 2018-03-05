@@ -252,7 +252,7 @@ func TestMissingIntermediates(t *testing.T) {
 		surl, _ := url.Parse(s.URL)
 		port := surl.Port()
 		surl.Host = fmt.Sprintf("%s.org:%s", hname, port)
-		for i := 0; i < 2; i++ {
+		for i := 0; i < 30; i++ {
 			wg.Add(1)
 			go func(hname string, serverURL string) {
 				defer func() {

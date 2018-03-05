@@ -40,6 +40,8 @@ var cc = &certCache{
 	},
 }
 
+// PeerCertVerifier - this is a method type that is plugged into a tls.Config.VerifyPeerCertificate,
+// or into our NextVerifyPeerCertificate.
 type PeerCertVerifier func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
 
 // NewInTransportClient - generate an http client with sensible deaults
@@ -80,7 +82,7 @@ type InTransport struct {
 	// This method will be called after a successful InTransport verification,
 	// and verifiedChains will contain appropriate data including any intermediates
 	// that needed to be downloaded.
-	NextVerifyPeerCertificate func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
+	NextVerifyPeerCertificate PeerCertVerifier
 
 	TLS *tls.Config
 }
