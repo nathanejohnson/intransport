@@ -15,10 +15,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
-	"sync"
-
 	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 	// "golang.org/x/crypto/ocsp"
@@ -70,6 +70,32 @@ var (
 	serial              = int64(9000)
 	rootPool            = x509.NewCertPool()
 )
+
+type futzer struct {
+	t *testing.T
+}
+
+func (f *futzer) futz(DNSName string) string {
+	bits := strings.Split(DNSName, ".")
+	if len(bits) != 2 {
+		f.t.Errorf("invalid dnsname: %s", bits)
+		f.t.FailNow()
+		return ""
+	}
+	if hs, ok := hostServers[bits[0]]; ok {
+		u, err := url.Parse(hs.URL)
+		if err != nil {
+			f.t.Logf("error parsing url %s: %s", hs.URL, err)
+			f.t.FailNow()
+			return ""
+		}
+		f.t.Logf("futzer.futz mapped %s to %s", DNSName, u.Hostname())
+		return u.Hostname()
+	}
+	f.t.Errorf("missing entry in hostServers map %s", bits[0])
+	f.t.FailNow()
+	return ""
+}
 
 func TestMain(m *testing.M) {
 	var err error
@@ -233,7 +259,10 @@ func TestMain(m *testing.M) {
 
 func TestMissingIntermediates(t *testing.T) {
 	wg := &sync.WaitGroup{}
-	c := NewInTransportHTTPClient(func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	df := &futzer{t: t}
+	it, c := NewInTransportHTTPClient(&tls.Config{RootCAs: rootPool})
+	it.DNSFutzer = df
+	it.NextVerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 		t.Logf("Chain length: %d", len(verifiedChains))
 		for i, chain := range verifiedChains {
 			t.Logf("chain %d length: %d", i, len(chain))
@@ -246,13 +275,13 @@ func TestMissingIntermediates(t *testing.T) {
 			}
 		}
 		return nil
-	}, &tls.Config{RootCAs: rootPool})
+	}
 	for hname, s := range hostServers {
 		t.Logf("doing %s", hname)
 		surl, _ := url.Parse(s.URL)
 		port := surl.Port()
 		surl.Host = fmt.Sprintf("%s.org:%s", hname, port)
-		for i := 0; i < 30; i++ {
+		for i := 0; i < 10; i++ {
 			wg.Add(1)
 			go func(hname string, serverURL string) {
 				defer func() {
@@ -307,18 +336,18 @@ func signCSR(
 	signCert *x509.Certificate,
 	signerURL string,
 	isCA bool) (*x509.Certificate, error) {
+
 	subjKeyID := make([]byte, 8)
 	_, err := rand.Read(subjKeyID)
 	if err != nil {
 		panic(err)
 	}
 	crtTmpl := &x509.Certificate{
-		Signature:          csr.Signature,
-		SignatureAlgorithm: csr.SignatureAlgorithm,
-		PublicKeyAlgorithm: csr.PublicKeyAlgorithm,
-		PublicKey:          csr.PublicKey,
-		SerialNumber:       NextSerial(),
-		//		Issuer:                signCert.Issuer,
+		Signature:             csr.Signature,
+		SignatureAlgorithm:    csr.SignatureAlgorithm,
+		PublicKeyAlgorithm:    csr.PublicKeyAlgorithm,
+		PublicKey:             csr.PublicKey,
+		SerialNumber:          NextSerial(),
 		Subject:               csr.Subject,
 		SubjectKeyId:          subjKeyID,
 		NotBefore:             time.Now(),

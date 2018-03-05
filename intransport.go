@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"golang.org/x/net/context"
 )
 
 type certCacheEntry struct {
@@ -40,41 +42,126 @@ var cc = &certCache{
 	},
 }
 
+type DialSession struct {
+	dnsName string
+	it      *InTransport
+}
+
+func (it *InTransport) Dial(network, address string) (net.Conn, error) {
+	if network != "tcp" {
+		return nil, fmt.Errorf("unsupported network type: %s", network)
+	}
+
+	ds := &DialSession{it: it}
+	var err error
+	var port string
+	ds.dnsName, port, err = net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+
+	if it.DNSFutzer != nil {
+		address = it.DNSFutzer(ds.dnsName) + ":" + port
+	}
+	tlsc := it.TLS.Clone()
+	tlsc.VerifyPeerCertificate = ds.VerifyPeerCertificate
+	ctx := context.Background()
+
+	var timer *time.Timer // for canceling TLS handshake
+	if it.TLSHandshakeTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, it.TLSHandshakeTimeout)
+		defer cancel()
+	}
+
+	plainConn, err := it.DialContext(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
+
+	tlsConn := tls.Client(plainConn, tlsc)
+	errc := make(chan error, 2)
+	var timer *time.Timer // for canceling TLS handshake
+	if d := t.TLSHandshakeTimeout; d != 0 {
+		timer = time.AfterFunc(d, func() {
+			errc <- tlsHandshakeTimeoutError{}
+		})
+	}
+	go func() {
+		if trace != nil && trace.TLSHandshakeStart != nil {
+			trace.TLSHandshakeStart()
+		}
+		err := tlsConn.Handshake()
+		if timer != nil {
+			timer.Stop()
+		}
+		errc <- err
+	}()
+	if err := <-errc; err != nil {
+		plainConn.Close()
+		if trace != nil && trace.TLSHandshakeDone != nil {
+			trace.TLSHandshakeDone(tls.ConnectionState{}, err)
+		}
+		return nil, err
+	}
+	if it.TLSHandshakeTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), it.TLSHandshakeTimeout)
+
+		defer cancel()
+	} else {
+		ctx = context.Background()
+	}
+	return tls.DialWithDialer(
+		&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+			DualStack: true,
+		},
+		network,
+		address,
+		tlsc,
+	)
+}
+
 // PeerCertVerifier - this is a method type that is plugged into a tls.Config.VerifyPeerCertificate,
 // or into our NextVerifyPeerCertificate.
 type PeerCertVerifier func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
 
 // NewInTransportClient - generate an http client with sensible deaults
 // that will fetch missing intermediate certificates as needed.
-func NewInTransportHTTPClient(nextVerifyPeerCertificate PeerCertVerifier, tlsc *tls.Config) *http.Client {
-	it := InTransport{NextVerifyPeerCertificate: nextVerifyPeerCertificate}
+func NewInTransportHTTPClient(tlsc *tls.Config) (*InTransport, *http.Client) {
+	it := &InTransport{
+		TLS:                 &tls.Config{},
+		TLSHandshakeTimeout: 10 * time.Second,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+			DualStack: true,
+		}).DialContext,
+	}
 
 	if tlsc != nil {
 		it.TLS = tlsc.Clone()
+	} else {
+		it.TLS = new(tls.Config)
 	}
 
 	it.TLS.InsecureSkipVerify = true
-	it.TLS.VerifyPeerCertificate = it.VerifyPeerCertificate
 
-	if tlsc != nil {
-	}
-	return &http.Client{
-		// Defaults from http.DefaultTransport
+	return it, &http.Client{
 		Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-				DualStack: true,
-			}).DialContext,
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           it.DialContext,
 			MaxIdleConns:          100,
 			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
-			TLSClientConfig:       it.TLS,
+			DialTLS:               it.Dial,
 		},
 	}
 }
+
+type DNSFutzer func(DNSName string) string
 
 type InTransport struct {
 	// Specify this method in the situation where you might otherwise have wanted to
@@ -84,7 +171,15 @@ type InTransport struct {
 	// that needed to be downloaded.
 	NextVerifyPeerCertificate PeerCertVerifier
 
-	TLS *tls.Config
+	// This is a hook you can like an /etc/hosts lookup, but in code.
+	// Used internally for testing, but might be generally useful.
+	DNSFutzer DNSFutzer
+
+	TLS                 *tls.Config
+	TLSHandshakeTimeout time.Duration
+
+	Transport   http.RoundTripper
+	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
 // VerifyPeerCertificate - this is the method that is to be plugged into
@@ -100,7 +195,7 @@ type InTransport struct {
 // connection will fail .  If a chain can be established, then the optional
 // NextVerifyPeerCertificate() method will be called, if specified.  If this
 // method returns an error, it will stop the connection.
-func (it InTransport) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+func (ds *DialSession) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 	if len(rawCerts) == 0 {
 		return fmt.Errorf("no certificates supplied")
 	}
@@ -116,12 +211,12 @@ func (it InTransport) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certi
 
 	var err error
 	var verifiedChains [][]*x509.Certificate
-	verifiedChains, err = it.verifyChains(PeerCertificates)
+	verifiedChains, err = ds.verifyChains(PeerCertificates)
 	if err != nil {
 		return err
 	}
-	if it.NextVerifyPeerCertificate != nil {
-		err = it.NextVerifyPeerCertificate(rawCerts, verifiedChains)
+	if ds.it.NextVerifyPeerCertificate != nil {
+		err = ds.it.NextVerifyPeerCertificate(rawCerts, verifiedChains)
 	}
 
 	return err
@@ -129,7 +224,7 @@ func (it InTransport) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certi
 
 // verifyChains - this takes cert(s) and does it's best to find a path to a recognized root,
 // fetching intermediate certs that may be missing.
-func (it *InTransport) verifyChains(certs []*x509.Certificate) (chains [][]*x509.Certificate, err error) {
+func (ds *DialSession) verifyChains(certs []*x509.Certificate) (chains [][]*x509.Certificate, err error) {
 
 	cp := x509.NewCertPool()
 	if len(certs) > 1 {
@@ -139,14 +234,15 @@ func (it *InTransport) verifyChains(certs []*x509.Certificate) (chains [][]*x509
 	}
 
 	chains, err = certs[0].Verify(x509.VerifyOptions{
-		Roots:         it.TLS.RootCAs,
+		Roots:         ds.it.TLS.RootCAs,
 		Intermediates: cp,
+		DNSName:       ds.dnsName,
 	})
 
 	if err != nil {
 		var dledIntermediates []*x509.Certificate
 
-		dledIntermediates, err = it.buildChain(certs[len(certs)-1])
+		dledIntermediates, err = ds.buildChain(certs[len(certs)-1])
 		if err != nil {
 			return nil, fmt.Errorf("failed to find chain: %s", err)
 		}
@@ -154,8 +250,9 @@ func (it *InTransport) verifyChains(certs []*x509.Certificate) (chains [][]*x509
 			cp.AddCert(cert)
 		}
 		chains, err = certs[0].Verify(x509.VerifyOptions{
-			Roots:         it.TLS.RootCAs,
+			Roots:         ds.it.TLS.RootCAs,
 			Intermediates: cp,
+			DNSName:       ds.dnsName,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("chain failed verification after fetch: %s", err)
@@ -164,7 +261,7 @@ func (it *InTransport) verifyChains(certs []*x509.Certificate) (chains [][]*x509
 	return
 }
 
-func (it *InTransport) buildChain(cert *x509.Certificate) ([]*x509.Certificate, error) {
+func (ds *DialSession) buildChain(cert *x509.Certificate) ([]*x509.Certificate, error) {
 	tmpCert := cert
 	var retval []*x509.Certificate
 	var lastError error
@@ -172,7 +269,8 @@ func (it *InTransport) buildChain(cert *x509.Certificate) ([]*x509.Certificate, 
 		// TODO - set a limit to how many iterations of this loop
 		// what's sane?
 		_, lastError = tmpCert.Verify(x509.VerifyOptions{
-			Roots: it.TLS.RootCAs,
+			Roots: ds.it.TLS.RootCAs,
+			// We don't care about dns names here
 		})
 		if lastError == nil {
 			break
