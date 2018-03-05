@@ -3,6 +3,7 @@ package intransport
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -39,9 +40,22 @@ var cc = &certCache{
 	},
 }
 
+type PeerCertVerifier func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
+
 // NewInTransportClient - generate an http client with sensible deaults
 // that will fetch missing intermediate certificates as needed.
-func NewInTransportClient() *http.Client {
+func NewInTransportHTTPClient(nextVerifyPeerCertificate PeerCertVerifier, tlsc *tls.Config) *http.Client {
+	it := InTransport{NextVerifyPeerCertificate: nextVerifyPeerCertificate}
+
+	if tlsc != nil {
+		it.TLS = tlsc.Clone()
+	}
+
+	it.TLS.InsecureSkipVerify = true
+	it.TLS.VerifyPeerCertificate = it.VerifyPeerCertificate
+
+	if tlsc != nil {
+	}
 	return &http.Client{
 		// Defaults from http.DefaultTransport
 		Transport: &http.Transport{
@@ -55,16 +69,7 @@ func NewInTransportClient() *http.Client {
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
-			TLSClientConfig: &tls.Config{
-				// This must be true or our VerifyPeerCertificate method
-				// won't be called if it fails initial validation such
-				// as when intermediate certificates are missing, which
-				// is the whole point of this silly package.
-				InsecureSkipVerify: true,
-
-				// This is where the magic happens.
-				VerifyPeerCertificate: InTransport{}.VerifyPeerCertificate,
-			},
+			TLSClientConfig:       it.TLS,
 		},
 	}
 }
@@ -76,6 +81,8 @@ type InTransport struct {
 	// and verifiedChains will contain appropriate data including any intermediates
 	// that needed to be downloaded.
 	NextVerifyPeerCertificate func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
+
+	TLS *tls.Config
 }
 
 // VerifyPeerCertificate - this is the method that is to be plugged into
@@ -104,9 +111,10 @@ func (it InTransport) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certi
 		}
 		PeerCertificates = append(PeerCertificates, cert)
 	}
+
 	var err error
 	var verifiedChains [][]*x509.Certificate
-	verifiedChains, err = verifyChains(PeerCertificates)
+	verifiedChains, err = it.verifyChains(PeerCertificates)
 	if err != nil {
 		return err
 	}
@@ -119,7 +127,7 @@ func (it InTransport) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certi
 
 // verifyChains - this takes cert(s) and does it's best to find a path to a recognized root,
 // fetching intermediate certs that may be missing.
-func verifyChains(certs []*x509.Certificate) (chains [][]*x509.Certificate, err error) {
+func (it *InTransport) verifyChains(certs []*x509.Certificate) (chains [][]*x509.Certificate, err error) {
 
 	cp := x509.NewCertPool()
 	if len(certs) > 1 {
@@ -129,13 +137,14 @@ func verifyChains(certs []*x509.Certificate) (chains [][]*x509.Certificate, err 
 	}
 
 	chains, err = certs[0].Verify(x509.VerifyOptions{
+		Roots:         it.TLS.RootCAs,
 		Intermediates: cp,
 	})
 
 	if err != nil {
 		var dledIntermediates []*x509.Certificate
 
-		dledIntermediates, err = buildChain(certs[len(certs)-1])
+		dledIntermediates, err = it.buildChain(certs[len(certs)-1])
 		if err != nil {
 			return nil, fmt.Errorf("failed to find chain: %s", err)
 		}
@@ -143,6 +152,7 @@ func verifyChains(certs []*x509.Certificate) (chains [][]*x509.Certificate, err 
 			cp.AddCert(cert)
 		}
 		chains, err = certs[0].Verify(x509.VerifyOptions{
+			Roots:         it.TLS.RootCAs,
 			Intermediates: cp,
 		})
 		if err != nil {
@@ -152,21 +162,29 @@ func verifyChains(certs []*x509.Certificate) (chains [][]*x509.Certificate, err 
 	return
 }
 
-func buildChain(cert *x509.Certificate) ([]*x509.Certificate, error) {
+func (it *InTransport) buildChain(cert *x509.Certificate) ([]*x509.Certificate, error) {
 	tmpCert := cert
 	var retval []*x509.Certificate
+	var lastError error
 	for {
-		_, err := tmpCert.Verify(x509.VerifyOptions{})
-		if err == nil {
+		// TODO - set a limit to how many iterations of this loop
+		// what's sane?
+		_, lastError = tmpCert.Verify(x509.VerifyOptions{
+			Roots: it.TLS.RootCAs,
+		})
+		if lastError == nil {
 			break
 		}
-
+		var err error
 		tmpCert, err = fetchIssuingCert(tmpCert)
 
 		if err != nil {
 			return nil, err
 		}
 		retval = append(retval, tmpCert)
+	}
+	if lastError != nil {
+		return nil, lastError
 	}
 	return retval, nil
 }
@@ -176,10 +194,17 @@ func fetchIssuingCert(cert *x509.Certificate) (*x509.Certificate, error) {
 	// 1) avoid stampede problem - minimizes fetches of a cert on cache miss
 	// 2) avoid long locks on the outer map.
 	if len(cert.IssuingCertificateURL) == 0 {
-		return nil, fmt.Errorf("failed to fetchintermediates for %s",
+		return nil, fmt.Errorf("failed to fetch intermediates for %s",
 			cert.Subject.CommonName)
 	}
-	mapKey := cert.Issuer.CommonName + ":" + cert.Issuer.SerialNumber
+
+	var mapKey string
+	if len(cert.AuthorityKeyId) > 0 {
+		enc := base64.RawStdEncoding.EncodeToString(cert.AuthorityKeyId)
+		mapKey = cert.Issuer.CommonName + ":" + enc
+	} else {
+		mapKey = cert.Issuer.CommonName
+	}
 	cc.Lock()
 	cce, ok := cc.m[mapKey]
 	if ok {
@@ -201,7 +226,9 @@ func fetchIssuingCert(cert *x509.Certificate) (*x509.Certificate, error) {
 
 	// Once we're here, cce is locked, cc is unlocked
 	// defer is nowhere near as slow as the code below
-	defer cce.Unlock()
+	defer func() {
+		cce.Unlock()
+	}()
 
 	// I've yet to see more than one IssuingCertificateURL,
 	// but just in case...
