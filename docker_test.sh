@@ -15,6 +15,6 @@ for host in $hosts; do
 	args+=(--add-host ${host}:127.0.0.1)
 done
 
-args+=(iron/go:dev /bin/ash -c "cd $SRCDIR && GODEBUG=netdns=cgo /usr/local/go/bin/go test -v")
+args+=(iron/go:dev /bin/ash -c "cd $SRCDIR && GODEBUG=netdns=cgo /usr/local/go/bin/go test")
 
 exec "$docker" "${args[@]}"
