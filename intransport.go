@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -118,10 +119,10 @@ func (it *InTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			resp.Body.Close()
 			return nil, fmt.Errorf("no peer certificates presented")
 		}
-		var h string
-		h, _, err = net.SplitHostPort(req.Host)
-		if err != nil {
-			return nil, err
+		h := resp.Request.Host
+
+		if hasPort(h) {
+			h = h[:strings.LastIndex(h, ":")]
 		}
 
 		err = resp.TLS.PeerCertificates[0].VerifyHostname(h)
@@ -132,6 +133,8 @@ func (it *InTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	return resp, err
 }
+
+func hasPort(s string) bool { return strings.LastIndex(s, ":") > strings.LastIndex(s, "]") }
 
 // VerifyPeerCertificate - this is the method that is to be plugged into
 // tls.Config VerifyPeerCertificate.  If using this method inside of a custom
