@@ -214,7 +214,7 @@ func TestMain(m *testing.M) {
 			}))
 			tlsc := &tls.Config{
 				Certificates: []tls.Certificate{
-					tls.Certificate{
+					{
 						Certificate: [][]byte{crt.Raw},
 						PrivateKey:  priv,
 					},
