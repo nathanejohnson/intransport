@@ -231,6 +231,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestMissingIntermediates(t *testing.T) {
+
 	wg := &sync.WaitGroup{}
 	it, c := NewInTransportHTTPClient(&tls.Config{RootCAs: rootPool})
 	it.NextVerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
