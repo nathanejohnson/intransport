@@ -17,7 +17,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -70,32 +69,6 @@ var (
 	serial              = int64(9000)
 	rootPool            = x509.NewCertPool()
 )
-
-type futzer struct {
-	t *testing.T
-}
-
-func (f *futzer) futz(DNSName string) string {
-	bits := strings.Split(DNSName, ".")
-	if len(bits) != 2 {
-		f.t.Errorf("invalid dnsname: %s", bits)
-		f.t.FailNow()
-		return ""
-	}
-	if hs, ok := hostServers[bits[0]]; ok {
-		u, err := url.Parse(hs.URL)
-		if err != nil {
-			f.t.Logf("error parsing url %s: %s", hs.URL, err)
-			f.t.FailNow()
-			return ""
-		}
-		f.t.Logf("futzer.futz mapped %s to %s", DNSName, u.Hostname())
-		return u.Hostname()
-	}
-	f.t.Errorf("missing entry in hostServers map %s", bits[0])
-	f.t.FailNow()
-	return ""
-}
 
 func TestMain(m *testing.M) {
 	var err error
@@ -259,9 +232,7 @@ func TestMain(m *testing.M) {
 
 func TestMissingIntermediates(t *testing.T) {
 	wg := &sync.WaitGroup{}
-	df := &futzer{t: t}
 	it, c := NewInTransportHTTPClient(&tls.Config{RootCAs: rootPool})
-	it.DNSFutzer = df
 	it.NextVerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 		t.Logf("Chain length: %d", len(verifiedChains))
 		for i, chain := range verifiedChains {

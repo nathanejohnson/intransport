@@ -5,13 +5,12 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
 	"sync"
 	"time"
-
-	"golang.org/x/net/context"
 )
 
 type certCacheEntry struct {
@@ -42,86 +41,9 @@ var cc = &certCache{
 	},
 }
 
-type DialSession struct {
-	dnsName string
-	it      *InTransport
-}
-
-func (it *InTransport) Dial(network, address string) (net.Conn, error) {
-	if network != "tcp" {
-		return nil, fmt.Errorf("unsupported network type: %s", network)
-	}
-
-	ds := &DialSession{it: it}
-	var err error
-	var port string
-	ds.dnsName, port, err = net.SplitHostPort(address)
-	if err != nil {
-		return nil, err
-	}
-
-	if it.DNSFutzer != nil {
-		address = it.DNSFutzer(ds.dnsName) + ":" + port
-	}
-	tlsc := it.TLS.Clone()
-	tlsc.VerifyPeerCertificate = ds.VerifyPeerCertificate
-	ctx := context.Background()
-
-	var timer *time.Timer // for canceling TLS handshake
-	if it.TLSHandshakeTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, it.TLSHandshakeTimeout)
-		defer cancel()
-	}
-
-	plainConn, err := it.DialContext(ctx, network, address)
-	if err != nil {
-		return nil, err
-	}
-
-	tlsConn := tls.Client(plainConn, tlsc)
-	errc := make(chan error, 2)
-	var timer *time.Timer // for canceling TLS handshake
-	if d := t.TLSHandshakeTimeout; d != 0 {
-		timer = time.AfterFunc(d, func() {
-			errc <- tlsHandshakeTimeoutError{}
-		})
-	}
-	go func() {
-		if trace != nil && trace.TLSHandshakeStart != nil {
-			trace.TLSHandshakeStart()
-		}
-		err := tlsConn.Handshake()
-		if timer != nil {
-			timer.Stop()
-		}
-		errc <- err
-	}()
-	if err := <-errc; err != nil {
-		plainConn.Close()
-		if trace != nil && trace.TLSHandshakeDone != nil {
-			trace.TLSHandshakeDone(tls.ConnectionState{}, err)
-		}
-		return nil, err
-	}
-	if it.TLSHandshakeTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(context.Background(), it.TLSHandshakeTimeout)
-
-		defer cancel()
-	} else {
-		ctx = context.Background()
-	}
-	return tls.DialWithDialer(
-		&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-			DualStack: true,
-		},
-		network,
-		address,
-		tlsc,
-	)
+type dialSession struct {
+	it  *InTransport
+	chi *tls.ClientHelloInfo
 }
 
 // PeerCertVerifier - this is a method type that is plugged into a tls.Config.VerifyPeerCertificate,
@@ -131,9 +53,12 @@ type PeerCertVerifier func(rawCerts [][]byte, verifiedChains [][]*x509.Certifica
 // NewInTransportClient - generate an http client with sensible deaults
 // that will fetch missing intermediate certificates as needed.
 func NewInTransportHTTPClient(tlsc *tls.Config) (*InTransport, *http.Client) {
-	it := &InTransport{
-		TLS:                 &tls.Config{},
-		TLSHandshakeTimeout: 10 * time.Second,
+	t := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
@@ -141,23 +66,21 @@ func NewInTransportHTTPClient(tlsc *tls.Config) (*InTransport, *http.Client) {
 		}).DialContext,
 	}
 
+	it := &InTransport{
+		Transport: t,
+	}
+
 	if tlsc != nil {
 		it.TLS = tlsc.Clone()
 	} else {
 		it.TLS = new(tls.Config)
 	}
-
+	it.TLS.VerifyPeerCertificate = it.VerifyPeerCertificate
 	it.TLS.InsecureSkipVerify = true
+	t.TLSClientConfig = it.TLS
 
 	return it, &http.Client{
-		Transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           it.DialContext,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-			DialTLS:               it.Dial,
-		},
+		Transport: it,
 	}
 }
 
@@ -178,8 +101,36 @@ type InTransport struct {
 	TLS                 *tls.Config
 	TLSHandshakeTimeout time.Duration
 
-	Transport   http.RoundTripper
-	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+	Transport http.RoundTripper
+}
+
+func (it *InTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := it.Transport.RoundTrip(req)
+	if err != nil {
+		return resp, err
+	}
+
+	// Now verify hostname on TLS since we couldn't see it in our
+	// VerifyPeerCertificate callback.
+	if resp.TLS != nil {
+		if len(resp.TLS.PeerCertificates) == 0 {
+			_, _ = io.Copy(ioutil.Discard, resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("no peer certificates presented")
+		}
+		var h string
+		h, _, err = net.SplitHostPort(req.Host)
+		if err != nil {
+			return nil, err
+		}
+
+		err = resp.TLS.PeerCertificates[0].VerifyHostname(h)
+		if err != nil {
+			return nil, err
+		}
+
+	}
+	return resp, err
 }
 
 // VerifyPeerCertificate - this is the method that is to be plugged into
@@ -195,7 +146,7 @@ type InTransport struct {
 // connection will fail .  If a chain can be established, then the optional
 // NextVerifyPeerCertificate() method will be called, if specified.  If this
 // method returns an error, it will stop the connection.
-func (ds *DialSession) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+func (it *InTransport) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 	if len(rawCerts) == 0 {
 		return fmt.Errorf("no certificates supplied")
 	}
@@ -211,12 +162,12 @@ func (ds *DialSession) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Cert
 
 	var err error
 	var verifiedChains [][]*x509.Certificate
-	verifiedChains, err = ds.verifyChains(PeerCertificates)
+	verifiedChains, err = it.verifyChains(PeerCertificates)
 	if err != nil {
 		return err
 	}
-	if ds.it.NextVerifyPeerCertificate != nil {
-		err = ds.it.NextVerifyPeerCertificate(rawCerts, verifiedChains)
+	if it.NextVerifyPeerCertificate != nil {
+		err = it.NextVerifyPeerCertificate(rawCerts, verifiedChains)
 	}
 
 	return err
@@ -224,7 +175,7 @@ func (ds *DialSession) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Cert
 
 // verifyChains - this takes cert(s) and does it's best to find a path to a recognized root,
 // fetching intermediate certs that may be missing.
-func (ds *DialSession) verifyChains(certs []*x509.Certificate) (chains [][]*x509.Certificate, err error) {
+func (it *InTransport) verifyChains(certs []*x509.Certificate) (chains [][]*x509.Certificate, err error) {
 
 	cp := x509.NewCertPool()
 	if len(certs) > 1 {
@@ -234,15 +185,14 @@ func (ds *DialSession) verifyChains(certs []*x509.Certificate) (chains [][]*x509
 	}
 
 	chains, err = certs[0].Verify(x509.VerifyOptions{
-		Roots:         ds.it.TLS.RootCAs,
+		Roots:         it.TLS.RootCAs,
 		Intermediates: cp,
-		DNSName:       ds.dnsName,
 	})
 
 	if err != nil {
 		var dledIntermediates []*x509.Certificate
 
-		dledIntermediates, err = ds.buildChain(certs[len(certs)-1])
+		dledIntermediates, err = it.buildChain(certs[len(certs)-1])
 		if err != nil {
 			return nil, fmt.Errorf("failed to find chain: %s", err)
 		}
@@ -250,9 +200,8 @@ func (ds *DialSession) verifyChains(certs []*x509.Certificate) (chains [][]*x509
 			cp.AddCert(cert)
 		}
 		chains, err = certs[0].Verify(x509.VerifyOptions{
-			Roots:         ds.it.TLS.RootCAs,
+			Roots:         it.TLS.RootCAs,
 			Intermediates: cp,
-			DNSName:       ds.dnsName,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("chain failed verification after fetch: %s", err)
@@ -261,7 +210,7 @@ func (ds *DialSession) verifyChains(certs []*x509.Certificate) (chains [][]*x509
 	return
 }
 
-func (ds *DialSession) buildChain(cert *x509.Certificate) ([]*x509.Certificate, error) {
+func (it *InTransport) buildChain(cert *x509.Certificate) ([]*x509.Certificate, error) {
 	tmpCert := cert
 	var retval []*x509.Certificate
 	var lastError error
@@ -269,7 +218,7 @@ func (ds *DialSession) buildChain(cert *x509.Certificate) ([]*x509.Certificate, 
 		// TODO - set a limit to how many iterations of this loop
 		// what's sane?
 		_, lastError = tmpCert.Verify(x509.VerifyOptions{
-			Roots: ds.it.TLS.RootCAs,
+			Roots: it.TLS.RootCAs,
 			// We don't care about dns names here
 		})
 		if lastError == nil {
