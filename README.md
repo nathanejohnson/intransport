@@ -1,4 +1,6 @@
 [![GoDoc](https://godoc.org/github.com/nathanejohnson/intransport?status.svg)](https://godoc.org/github.com/nathanejohnson/intransport)
+[![Go Report Card](https://goreportcard.com/badge/github.com/nathanejohnson/intransport)](https://goreportcard.com/report/github.com/nathanejohnson/intransport)
+
 [![Build Status](https://api.travis-ci.org/nathanejohnson/intransport.svg?branch=master)](https://travis-ci.org/nathanejohnson/intransport)
 
 
