@@ -42,17 +42,14 @@ var cc = &certCache{
 	},
 }
 
-type dialSession struct {
-	it  *InTransport
-	chi *tls.ClientHelloInfo
-}
-
 // PeerCertVerifier - this is a method type that is plugged into a tls.Config.VerifyPeerCertificate,
 // or into our NextVerifyPeerCertificate.
 type PeerCertVerifier func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
 
-// NewInTransportClient - generate an http client with sensible deaults
-// that will fetch missing intermediate certificates as needed.
+// NewInTransportHTTPClient - generate an http client with sensible deaults
+// that will fetch missing intermediate certificates as needed.  Optionally pass
+// a *tls.Config that will be used as a basis for tls configuration.  Once returned,
+// you can tweak
 func NewInTransportHTTPClient(tlsc *tls.Config) (*InTransport, *http.Client) {
 	t := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
@@ -85,8 +82,9 @@ func NewInTransportHTTPClient(tlsc *tls.Config) (*InTransport, *http.Client) {
 	}
 }
 
-type DNSFutzer func(DNSName string) string
-
+// InTransport - this implements an http.RoundTripper and handles the fetching
+// of missing intermediate certificates, and (soon) verifying OCSP stapling
+// in the event there is a "must staple" set on the certificate.
 type InTransport struct {
 	// Specify this method in the situation where you might otherwise have wanted to
 	// install your own VerifyPeerCertificate hook into tls.Config.  If specified,
@@ -95,16 +93,14 @@ type InTransport struct {
 	// that needed to be downloaded.
 	NextVerifyPeerCertificate PeerCertVerifier
 
-	// This is a hook you can like an /etc/hosts lookup, but in code.
-	// Used internally for testing, but might be generally useful.
-	DNSFutzer DNSFutzer
-
 	TLS                 *tls.Config
 	TLSHandshakeTimeout time.Duration
 
 	Transport http.RoundTripper
 }
 
+// RoundTrip - this implements the http.RoundTripper interface, and makes it suitable
+// for use as a transport.
 func (it *InTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := it.Transport.RoundTrip(req)
 	if err != nil {
@@ -116,7 +112,7 @@ func (it *InTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if resp.TLS != nil {
 		if len(resp.TLS.PeerCertificates) == 0 {
 			_, _ = io.Copy(ioutil.Discard, resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("no peer certificates presented")
 		}
 		h := resp.Request.Host
@@ -262,11 +258,11 @@ func fetchIssuingCert(cert *x509.Certificate) (*x509.Certificate, error) {
 	if ok {
 		cc.Unlock()
 		cce.Lock()
-		cert := cce.cert
+		crt := cce.cert
 
-		if cert != nil {
+		if crt != nil {
 			cce.Unlock()
-			return cert, nil
+			return crt, nil
 		}
 	} else {
 		cce = new(certCacheEntry)

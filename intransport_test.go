@@ -34,11 +34,11 @@ func (im *intMeta) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-x509-ca-cert")
 	w.WriteHeader(http.StatusOK)
 	buf := bytes.NewReader(im.cert.Raw)
-	io.Copy(w, buf)
+	_, _ = io.Copy(w, buf)
 }
 
 var (
-	hostCNs []string = []string{
+	hostCNs = []string{
 		"anxiety",
 		"diffidence",
 		"self-doubt",
@@ -54,7 +54,7 @@ var (
 		"hazard",
 		"precariousness",
 	}
-	intermediateCNs []string = []string{
+	intermediateCNs = []string{
 		"asylum",
 		"safeness",
 		"sanctuary",
@@ -376,6 +376,8 @@ func writeCert(certPath string, asn1 []byte) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		_ = f.Close()
+	}()
 	return pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: asn1})
 }
