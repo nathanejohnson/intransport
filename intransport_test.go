@@ -8,8 +8,10 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/pem"
 	"fmt"
+	"golang.org/x/crypto/ocsp"
 	"io"
 	"io/ioutil"
 	"math/big"
@@ -23,8 +25,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"golang.org/x/crypto/ocsp"
 )
 
 type intMeta struct {
@@ -154,7 +154,7 @@ func TestMain(m *testing.M) {
 	}
 
 	var rootPriv *rsa.PrivateKey
-	rootPriv, err = genKeyAndWrite(filepath.Join(basePath, "rootCA.key"))
+	rootPriv, err = getKeyAndMaybeWrite(filepath.Join(basePath, "rootCA.key"))
 	if err != nil {
 		return
 	}
@@ -191,7 +191,7 @@ func TestMain(m *testing.M) {
 	for i, icn := range intermediateCNs {
 		fileName := icn + ".key"
 		var priv *rsa.PrivateKey
-		priv, err = genKeyAndWrite(filepath.Join(intDir, fileName))
+		priv, err = getKeyAndMaybeWrite(filepath.Join(intDir, fileName))
 		if err != nil {
 			return
 		}
@@ -237,7 +237,7 @@ func TestMain(m *testing.M) {
 			hcn := hostCNs[j]
 			fileName = hcn + ".key"
 			certFileName = hcn + ".crt"
-			priv, err = genKeyAndWrite(filepath.Join(hostDir, fileName))
+			priv, err = getKeyAndMaybeWrite(filepath.Join(hostDir, fileName))
 			if err != nil {
 				return
 			}
@@ -347,6 +347,110 @@ func TestMissingIntermediates(t *testing.T) {
 
 }
 
+func TestExpectedOCSPFailures(t *testing.T) {
+	testbed := hostServers[hostCNs[0]]
+	// Save staple for future use
+	origStaple := testbed.TLS.Certificates[0].OCSPStaple
+	testcrt, err := x509.ParseCertificate(testbed.TLS.Certificates[0].Certificate[0])
+	if err != nil {
+		t.Errorf("failed parsing certificate: %s", err)
+		t.FailNow()
+	}
+
+	issuer := intermediateServers[intermediateCNs[0]]
+
+	c := NewInTransportHTTPClient(&tls.Config{RootCAs: rootPool})
+
+	type failFunc func(resp *ocsp.Response) (outResp []byte, expectSuccess bool)
+
+	testTable := map[string]failFunc{
+		"Bad OCSP Serial": func(resp *ocsp.Response) ([]byte, bool) {
+			resp.SerialNumber = NextSerial()
+			rawResp, err := ocsp.CreateResponse(issuer.cert, testcrt, *resp, issuer.privKey)
+			if err != nil {
+				t.Errorf("unexpected error: %s", err)
+				t.FailNow()
+			}
+
+			return rawResp, false
+		},
+		"Expired OCSP": func(resp *ocsp.Response) ([]byte, bool) {
+			resp.NextUpdate = time.Now().Add(-time.Hour)
+			rawResp, err := ocsp.CreateResponse(issuer.cert, testcrt, *resp, issuer.privKey)
+			if err != nil {
+				t.Errorf("unexpected error: %s", err)
+				t.FailNow()
+			}
+
+			return rawResp, false
+		},
+		"Bad Chain OCSP cert": func(resp *ocsp.Response) ([]byte, bool) {
+			// grab a cert from another issuer.  we know that the first host
+			// was signed with the first intermediate, so let's grab another one
+			// and make an otherwise valid-looking OCSP response from the wrong
+			// issuer.
+			badIssuer := intermediateServers[intermediateCNs[3]]
+			crt := badIssuer.cert
+
+			rawResp, err := ocsp.CreateResponse(crt, testcrt, *resp, badIssuer.privKey)
+			if err != nil {
+				t.Errorf("unexpected error: %s", err)
+				t.FailNow()
+			}
+
+			return rawResp, false
+		},
+		"Canary OCSP": func(resp *ocsp.Response) ([]byte, bool) {
+			// test the test.
+			//tmpl := ocsp.Response{
+			//	Status:       resp.Status,
+			//	ThisUpdate:   resp.ThisUpdate,
+			//	NextUpdate:   resp.NextUpdate,
+			//	SerialNumber: testcrt.SerialNumber,
+			//}
+			rawResp, err := ocsp.CreateResponse(issuer.cert, testcrt, *resp, issuer.privKey)
+			if err != nil {
+				t.Errorf("unexpected error: %s", err)
+				t.FailNow()
+			}
+			return rawResp, true
+		},
+	}
+	surl, _ := url.Parse(testbed.URL)
+	port := surl.Port()
+	surl.Host = fmt.Sprintf("%s:%s", hostCNs[0], port)
+
+	for desc, tfunc := range testTable {
+		respVal, err := ocsp.ParseResponse(origStaple, issuer.cert)
+		if err != nil {
+			t.Errorf("Unexpected failure parsing ocsp response: %s", err)
+			t.FailNow()
+		}
+		resp, expectSuccess := tfunc(respVal)
+
+		testbed.TLS.Certificates[0].OCSPStaple = resp
+		httpresp, err := c.Get(surl.String())
+		if err == nil {
+			if !expectSuccess {
+				t.Errorf("subtest %s: unexpected success", desc)
+				t.Fail()
+			} else {
+				t.Logf("subtest %s: nil error returned, as expected", desc)
+			}
+			_, _ = io.Copy(ioutil.Discard, httpresp.Body)
+			httpresp.Body.Close()
+		} else {
+			if expectSuccess {
+				t.Errorf("subtest %s: unexpected failure: %s", desc, err)
+				t.Fail()
+			} else {
+				t.Logf("subtest %s: expected failure: %s", desc, err)
+			}
+		}
+	}
+	testbed.TLS.Certificates[0].OCSPStaple = origStaple
+}
+
 func makeCSR(cname string, priv *rsa.PrivateKey) (request *x509.CertificateRequest, err error) {
 	csrBytes, err := x509.CreateCertificateRequest(rand.Reader,
 		&x509.CertificateRequest{
@@ -423,7 +527,7 @@ func NextSerial() *big.Int {
 	return big.NewInt(serial)
 }
 
-func genKeyAndWrite(keyPath string) (*rsa.PrivateKey, error) {
+func getKeyAndMaybeWrite(keyPath string) (*rsa.PrivateKey, error) {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, err
@@ -461,4 +565,15 @@ func writeCert(certPath string, asn1 []byte) error {
 		_ = f.Close()
 	}()
 	return pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: asn1})
+}
+
+// cribbed from golang.org/x/crypto/ocsp
+type responseASN1 struct {
+	Status   asn1.Enumerated
+	Response responseBytes `asn1:"explicit,tag:0,optional"`
+}
+
+type responseBytes struct {
+	ResponseType asn1.ObjectIdentifier
+	Response     []byte
 }
