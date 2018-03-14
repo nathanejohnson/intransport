@@ -1,17 +1,20 @@
 package intransport
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/ocsp"
 )
 
 type certCacheEntry struct {
@@ -24,33 +27,52 @@ type certCache struct {
 	c *http.Client
 }
 
-var cc = &certCache{
-	m: make(map[string]*certCacheEntry),
-	c: &http.Client{
-		Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{
-				Timeout:   3 * time.Second,
-				KeepAlive: 0,
-				DualStack: true,
-			}).DialContext,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   3 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
+var (
+	// MustStapleValue is the value in the MustStaple extension.
+	MustStapleValue = []byte{0x30, 0x03, 0x02, 0x01, 0x05}
+
+	//MustStapleOID is the OID of the must staple
+	MustStapleOID = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 1, 24}
+
+	cc = &certCache{
+		m: make(map[string]*certCacheEntry),
+		c: &http.Client{
+			Transport: &http.Transport{
+				Proxy: http.ProxyFromEnvironment,
+				DialContext: (&net.Dialer{
+					Timeout:   3 * time.Second,
+					KeepAlive: 0,
+					DualStack: true,
+				}).DialContext,
+				MaxIdleConns:          100,
+				IdleConnTimeout:       90 * time.Second,
+				TLSHandshakeTimeout:   3 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+			},
 		},
-	},
-}
+	}
+)
 
 // PeerCertVerifier - this is a method type that is plugged into a tls.Config.VerifyPeerCertificate,
 // or into our NextVerifyPeerCertificate.
 type PeerCertVerifier func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
 
-// NewInTransportHTTPClient - generate an http client with sensible deaults
-// that will fetch missing intermediate certificates as needed.  Optionally pass
-// a *tls.Config that will be used as a basis for tls configuration.  Once returned,
-// you can tweak
-func NewInTransportHTTPClient(tlsc *tls.Config) (*InTransport, *http.Client) {
+// NewInTransportHTTPClient - generate an http client with sensible defaults.
+// Optionally pass a *tls.Config that will be used as a basis for tls configuration.
+func NewInTransportHTTPClient(tlsc *tls.Config) *http.Client {
+	return &http.Client{
+		Transport: NewInTransport(tlsc),
+	}
+}
+
+// NewInTransport - create a new http transport suitable for client connections.
+// InTransport implements http.RoundTripper, and can be used like so:
+//
+//    it := intransport.NewInTranport(nil)
+//    c := &http.Client{
+//        Transport: it,
+//    }
+func NewInTransport(tlsc *tls.Config) *InTransport {
 	t := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          100,
@@ -77,9 +99,7 @@ func NewInTransportHTTPClient(tlsc *tls.Config) (*InTransport, *http.Client) {
 	it.TLS.InsecureSkipVerify = true
 	t.TLSClientConfig = it.TLS
 
-	return it, &http.Client{
-		Transport: it,
-	}
+	return it
 }
 
 // InTransport - this implements an http.RoundTripper and handles the fetching
@@ -110,26 +130,103 @@ func (it *InTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Now verify hostname on TLS since we couldn't see it in our
 	// VerifyPeerCertificate callback.
 	if resp.TLS != nil {
-		if len(resp.TLS.PeerCertificates) == 0 {
-			_, _ = io.Copy(ioutil.Discard, resp.Body)
-			_ = resp.Body.Close()
-			return nil, fmt.Errorf("no peer certificates presented")
-		}
-		h := resp.Request.Host
 
-		if hasPort(h) {
-			h = h[:strings.LastIndex(h, ":")]
+		err := validateHost(resp.TLS.PeerCertificates, resp.Request.Host)
+		if err == nil {
+			err = it.validateOCSP(resp.TLS)
 		}
 
-		err = resp.TLS.PeerCertificates[0].VerifyHostname(h)
 		if err != nil {
+			_ = resp.Body.Close()
 			return nil, err
 		}
 
+	} else if req.URL.Scheme == "https" {
+		err := fmt.Errorf("https requested, but tls is nil\n")
+		_ = resp.Body.Close()
+		return nil, err
 	}
-	return resp, err
+
+	return resp, nil
+
 }
 
+func validateHost(certs []*x509.Certificate, host string) error {
+	crt := certs[0]
+
+	if hasPort(host) {
+		host = host[:strings.LastIndex(host, ":")]
+	}
+
+	err := crt.VerifyHostname(host)
+	if err != nil {
+		return err
+	}
+
+	return nil
+
+}
+
+func (it *InTransport) validateOCSP(connState *tls.ConnectionState) error {
+	peers := connState.PeerCertificates
+	if len(peers) == 0 {
+		return fmt.Errorf("no peer certificates presented")
+	}
+	crt := peers[0]
+
+	mustStaple := false
+	for _, ext := range crt.Extensions {
+		if ext.Id.Equal(MustStapleOID) {
+			if bytes.Equal(ext.Value, MustStapleValue) {
+				mustStaple = true
+			}
+			break
+		}
+	}
+
+	validatedStaple := false
+
+	if connState.OCSPResponse != nil {
+
+		// Validate the staple if present
+		// Let's grab the chain
+
+		chains, err := it.verifyChains(peers)
+		if err != nil {
+			return err
+		}
+
+		var chain []*x509.Certificate
+		if len(chains) < 1 {
+			err = fmt.Errorf("invalid chains length")
+		} else {
+			chain = chains[0]
+			if len(chain) < 2 {
+				err = fmt.Errorf("invalid chain length")
+			}
+		}
+		if err != nil {
+			return err
+		}
+
+		ocspResp, err := ocsp.ParseResponseForCert(connState.OCSPResponse, crt, chain[1])
+		if err != nil {
+			return err
+		}
+		if ocspResp.Status != ocsp.Good {
+
+			return fmt.Errorf("invalid ocsp validation: %s", ocsp.ResponseStatus(ocspResp.Status).String())
+		}
+		validatedStaple = true
+	}
+
+	if mustStaple && !validatedStaple {
+		return fmt.Errorf("certificate was marked with OCSP must-staple and no staple could be verified")
+	}
+	return nil
+}
+
+// lifted from standard library net/http/http.go
 func hasPort(s string) bool { return strings.LastIndex(s, ":") > strings.LastIndex(s, "]") }
 
 // VerifyPeerCertificate - this is the method that is to be plugged into
@@ -175,7 +272,6 @@ func (it *InTransport) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Cert
 // verifyChains - this takes cert(s) and does it's best to find a path to a recognized root,
 // fetching intermediate certs that may be missing.
 func (it *InTransport) verifyChains(certs []*x509.Certificate) (chains [][]*x509.Certificate, err error) {
-
 	cp := x509.NewCertPool()
 	if len(certs) > 1 {
 		for _, cert := range certs[1:] {

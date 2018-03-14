@@ -1,3 +1,4 @@
 *
 !.gitignore
-!hostaliases.*
+!intermediates.txt
+!insecurities.txt

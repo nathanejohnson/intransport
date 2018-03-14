@@ -1,6 +1,7 @@
 package intransport
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
@@ -17,10 +18,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
-	// "golang.org/x/crypto/ocsp"
+
+	"golang.org/x/crypto/ocsp"
 )
 
 type intMeta struct {
@@ -38,37 +42,79 @@ func (im *intMeta) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 var (
-	hostCNs = []string{
-		"anxiety",
-		"diffidence",
-		"self-doubt",
-		"timidity",
-		"uncertainty",
-		"doubt",
-		"hesitancy",
-		"indecision",
-		"vacillation",
-		"danger",
-		"instability",
-		"vulnerability",
-		"hazard",
-		"precariousness",
-	}
-	intermediateCNs = []string{
-		"asylum",
-		"safeness",
-		"sanctuary",
-		"shelter",
-		"surety",
-		"refuge",
-		"preservation",
-	}
+	hostCNs         []string
+	intermediateCNs []string
 
 	hostServers         = make(map[string]*httptest.Server)
 	intermediateServers = make(map[string]*intMeta)
 	serial              = int64(9000)
 	rootPool            = x509.NewCertPool()
+	writeFiles          bool
 )
+
+func prepDirs(intDir, hostDir string) error {
+
+	err := os.RemoveAll(intDir)
+	if err != nil {
+		return err
+	}
+	err = os.RemoveAll(hostDir)
+	if err != nil {
+		return err
+	}
+
+	err = os.Mkdir(intDir, 0755)
+	if err != nil {
+		return err
+	}
+
+	err = os.Mkdir(hostDir, 0755)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func readHosts(iFile, hFile string) error {
+	ifh, err := os.Open(iFile)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = ifh.Close()
+	}()
+	hfh, err := os.Open(hFile)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = hfh.Close()
+	}()
+
+	iScanner := bufio.NewScanner(ifh)
+	for iScanner.Scan() {
+
+		s := iScanner.Text()
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		intermediateCNs = append(intermediateCNs, s)
+	}
+	if iScanner.Err() != nil {
+		return err
+	}
+	hScanner := bufio.NewScanner(hfh)
+	for hScanner.Scan() {
+		s := hScanner.Text()
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		hostCNs = append(hostCNs, s)
+	}
+	return nil
+}
 
 func TestMain(m *testing.M) {
 	var err error
@@ -89,27 +135,26 @@ func TestMain(m *testing.M) {
 		os.Exit(ev)
 
 	}()
+	wftxt := os.Getenv("WRITE_FILES")
+	if wftxt != "" {
+		writeFiles, _ = strconv.ParseBool(wftxt)
+	}
 
 	basePath := "_testdata"
 	intDir := filepath.Join(basePath, "intermediates")
 	hostDir := filepath.Join(basePath, "hosts")
-	err = os.RemoveAll(intDir)
-	if err != nil {
-		return
-	}
-	err = os.RemoveAll(hostDir)
-	if err != nil {
-		return
-	}
+	hostFile := filepath.Join(basePath, "insecurities.txt")
+	intFile := filepath.Join(basePath, "intermediates.txt")
 
-	err = os.Mkdir(intDir, 0755)
+	err = readHosts(intFile, hostFile)
 	if err != nil {
 		return
 	}
-
-	err = os.Mkdir(hostDir, 0755)
-	if err != nil {
-		return
+	if writeFiles {
+		err = prepDirs(intDir, hostDir)
+		if err != nil {
+			return
+		}
 	}
 
 	var rootPriv *rsa.PrivateKey
@@ -130,9 +175,11 @@ func TestMain(m *testing.M) {
 		return
 	}
 
-	err = writeCert(filepath.Join(basePath, "rootCA.pem"), rootCert.Raw)
-	if err != nil {
-		return
+	if writeFiles {
+		err = writeCert(filepath.Join(basePath, "rootCA.pem"), rootCert.Raw)
+		if err != nil {
+			return
+		}
 	}
 
 	rootPool.AddCert(rootCert)
@@ -140,6 +187,7 @@ func TestMain(m *testing.M) {
 		cert:    rootCert,
 		privKey: rootPriv,
 	}
+
 	rootS := httptest.NewServer(rootIntM)
 	rootIntM.caIssuerURL = rootS.URL + "/root.crt"
 
@@ -157,22 +205,24 @@ func TestMain(m *testing.M) {
 		if err != nil {
 			return
 		}
-		var crt *x509.Certificate
+		var intCrt *x509.Certificate
 
-		crt, err = signCSR(csr, rootPriv, rootCert, rootIntM.caIssuerURL, true)
+		intCrt, err = signCSR(csr, rootPriv, rootCert, rootIntM.caIssuerURL, true)
 
 		if err != nil {
 			return
 		}
 
 		certFileName := icn + ".crt"
-		err = writeCert(filepath.Join(intDir, certFileName), crt.Raw)
+		if writeFiles {
+			err = writeCert(filepath.Join(intDir, certFileName), intCrt.Raw)
+		}
 
 		if err != nil {
 			return
 		}
 		inm := &intMeta{
-			cert:    crt,
+			cert:    intCrt,
 			privKey: priv,
 		}
 		s := httptest.NewServer(inm)
@@ -195,10 +245,11 @@ func TestMain(m *testing.M) {
 			if err != nil {
 				return
 			}
-			csr, err = makeCSR(fmt.Sprintf("%s.org", hcn), priv)
+			csr, err = makeCSR(hcn, priv)
 			if err != nil {
 				return
 			}
+			var crt *x509.Certificate
 			crt, err = signCSR(csr, inm.privKey, inm.cert, inm.caIssuerURL, false)
 			if err != nil {
 				return
@@ -212,14 +263,29 @@ func TestMain(m *testing.M) {
 				w.WriteHeader(200)
 				fmt.Fprintln(w, "hi there")
 			}))
+			var ocspResp []byte
+			tmpl := ocsp.Response{
+				Status:       ocsp.Good,
+				ThisUpdate:   time.Now(),
+				NextUpdate:   time.Now().Add(time.Hour),
+				SerialNumber: crt.SerialNumber,
+			}
+			ocspResp, err = ocsp.CreateResponse(inm.cert, crt, tmpl, inm.privKey)
+			if err != nil {
+				return
+			}
 			tlsc := &tls.Config{
 				Certificates: []tls.Certificate{
 					{
 						Certificate: [][]byte{crt.Raw},
 						PrivateKey:  priv,
+						OCSPStaple:  ocspResp,
 					},
 				},
 			}
+
+			_ = ocspResp
+
 			tlsc.BuildNameToCertificate()
 			s.TLS = tlsc
 			s.StartTLS()
@@ -230,10 +296,12 @@ func TestMain(m *testing.M) {
 	ev = m.Run()
 }
 
+// This tests functionality, and also beats up on the cache a bit.
 func TestMissingIntermediates(t *testing.T) {
 
 	wg := &sync.WaitGroup{}
-	it, c := NewInTransportHTTPClient(&tls.Config{RootCAs: rootPool})
+	c := NewInTransportHTTPClient(&tls.Config{RootCAs: rootPool})
+	it := c.Transport.(*InTransport)
 	it.NextVerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 		t.Logf("Chain length: %d", len(verifiedChains))
 		for i, chain := range verifiedChains {
@@ -252,7 +320,7 @@ func TestMissingIntermediates(t *testing.T) {
 		t.Logf("doing %s", hname)
 		surl, _ := url.Parse(s.URL)
 		port := surl.Port()
-		surl.Host = fmt.Sprintf("%s.org:%s", hname, port)
+		surl.Host = fmt.Sprintf("%s:%s", hname, port)
 		for i := 0; i < 10; i++ {
 			wg.Add(1)
 			go func(hname string, serverURL string) {
@@ -278,6 +346,18 @@ func TestMissingIntermediates(t *testing.T) {
 		}
 	}
 	wg.Wait()
+
+}
+
+func TestSiteOCSPMustStaple(t *testing.T) {
+	c := NewInTransportHTTPClient(nil)
+	resp, err := c.Get("https://blog.cloudflare.com")
+	if err != nil {
+		t.Error(err)
+		t.Fail()
+	}
+	_, _ = io.Copy(ioutil.Discard, resp.Body)
+	_ = resp.Body.Close()
 
 }
 
@@ -356,6 +436,11 @@ func genKeyAndWrite(keyPath string) (*rsa.PrivateKey, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	if !writeFiles {
+		return priv, nil
+	}
+
 	blck := &pem.Block{
 		Type:  "RSA PRIVATE KEY",
 		Bytes: x509.MarshalPKCS1PrivateKey(priv),
@@ -368,7 +453,11 @@ func genKeyAndWrite(keyPath string) (*rsa.PrivateKey, error) {
 	defer func() {
 		_ = f.Close()
 	}()
-	return priv, pem.Encode(f, blck)
+	err = pem.Encode(f, blck)
+	if err != nil {
+		return nil, err
+	}
+	return priv, nil
 }
 
 func writeCert(certPath string, asn1 []byte) error {
