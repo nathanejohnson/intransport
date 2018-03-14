@@ -331,14 +331,13 @@ func TestMissingIntermediates(t *testing.T) {
 					t.Fail()
 					return
 				}
-				b, err := ioutil.ReadAll(resp.Body)
+				_, err = ioutil.ReadAll(resp.Body)
 				_ = resp.Body.Close()
 				if err != nil {
 					t.Errorf("got error reading from response: %s: %s", hname, err)
 					t.Fail()
 					return
 				}
-				t.Logf("response from %s: %s", hname, string(b))
 			}(hname, surl.String())
 		}
 	}
@@ -358,11 +357,23 @@ func TestExpectedOCSPFailures(t *testing.T) {
 
 	issuer := intermediateServers[intermediateCNs[0]]
 
-	c := NewInTransportHTTPClient(&tls.Config{RootCAs: rootPool})
+	trans := NewInTransport(&tls.Config{RootCAs: rootPool})
+
+	trans.Transport.(*http.Transport).DisableKeepAlives = true
+	c := &http.Client{Transport: trans}
 
 	type failFunc func(resp *ocsp.Response) (outResp []byte, expectSuccess bool)
 
 	testTable := map[string]failFunc{
+		"Canary OCSP": func(resp *ocsp.Response) ([]byte, bool) {
+			// test the test
+			rawResp, err := ocsp.CreateResponse(issuer.cert, testcrt, *resp, issuer.privKey)
+			if err != nil {
+				t.Errorf("unexpected error: %s", err)
+				t.FailNow()
+			}
+			return rawResp, true
+		},
 		"Bad OCSP Serial": func(resp *ocsp.Response) ([]byte, bool) {
 			resp.SerialNumber = NextSerial()
 			rawResp, err := ocsp.CreateResponse(issuer.cert, testcrt, *resp, issuer.privKey)
@@ -388,6 +399,7 @@ func TestExpectedOCSPFailures(t *testing.T) {
 			// was signed with the first intermediate, so let's grab another one
 			// and make an otherwise valid-looking OCSP response from the wrong
 			// issuer.
+
 			badIssuer := intermediateServers[intermediateCNs[3]]
 			crt := badIssuer.cert
 
@@ -398,21 +410,6 @@ func TestExpectedOCSPFailures(t *testing.T) {
 			}
 
 			return rawResp, false
-		},
-		"Canary OCSP": func(resp *ocsp.Response) ([]byte, bool) {
-			// test the test.
-			//tmpl := ocsp.Response{
-			//	Status:       resp.Status,
-			//	ThisUpdate:   resp.ThisUpdate,
-			//	NextUpdate:   resp.NextUpdate,
-			//	SerialNumber: testcrt.SerialNumber,
-			//}
-			rawResp, err := ocsp.CreateResponse(issuer.cert, testcrt, *resp, issuer.privKey)
-			if err != nil {
-				t.Errorf("unexpected error: %s", err)
-				t.FailNow()
-			}
-			return rawResp, true
 		},
 	}
 	surl, _ := url.Parse(testbed.URL)
@@ -426,7 +423,7 @@ func TestExpectedOCSPFailures(t *testing.T) {
 			t.FailNow()
 		}
 		resp, expectSuccess := tfunc(respVal)
-
+		t.Logf("len of ocsp response from %s: %d", desc, len(resp))
 		testbed.TLS.Certificates[0].OCSPStaple = resp
 		httpresp, err := c.Get(surl.String())
 		if err == nil {
@@ -436,14 +433,24 @@ func TestExpectedOCSPFailures(t *testing.T) {
 			} else {
 				t.Logf("subtest %s: nil error returned, as expected", desc)
 			}
-			_, _ = io.Copy(ioutil.Discard, httpresp.Body)
-			_ = httpresp.Body.Close()
 		} else {
 			if expectSuccess {
 				t.Errorf("subtest %s: unexpected failure: %s", desc, err)
 				t.Fail()
 			} else {
 				t.Logf("subtest %s: expected failure: %s", desc, err)
+			}
+		}
+		if httpresp != nil {
+			_, err = io.Copy(ioutil.Discard, httpresp.Body)
+			if err != nil {
+				t.Errorf("error disposing of the body: %s", err)
+				t.Fail()
+			}
+			err = httpresp.Body.Close()
+			if err != nil {
+				t.Fail()
+				t.Errorf("error closing the body: %s", err)
 			}
 		}
 	}

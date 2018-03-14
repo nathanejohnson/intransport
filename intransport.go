@@ -214,7 +214,7 @@ func (it *InTransport) validateOCSP(connState *tls.ConnectionState) error {
 
 		if !time.Now().After(ocspResp.NextUpdate) {
 			// for now, don't fail on an expired staple unless must staple is specified.
-			// maybe revisit this in the future.
+			// maybe revisit this
 			validatedStaple = true
 		}
 
