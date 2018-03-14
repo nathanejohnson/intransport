@@ -1,11 +1,29 @@
 dist: trusty
-sudo: required
+sudo: false
 language: go
 
 go:
   - "1.x"
   - "1.9"
   - master
+
+
+addons:
+  hosts:
+    - anxiety.org
+    - danger.org
+    - diffidence.org
+    - doubt.org
+    - hazard.org
+    - hesitancy.org
+    - indecision.org
+    - instability.org
+    - precariousness.org
+    - self-doubt.org
+    - timidity.org
+    - uncertainty.org
+    - vacillation.org
+    - vulnerability.org
 
 env:
   - DEP_VERSION="0.4.1"
@@ -21,4 +39,4 @@ install:
   - dep ensure
   
 script:
-  ./docker_test.sh
+  - go test -v
