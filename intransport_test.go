@@ -359,6 +359,7 @@ func TestExpectedOCSPFailures(t *testing.T) {
 
 	trans := NewInTransport(&tls.Config{RootCAs: rootPool})
 
+	// Force connection to re-establish after every test.
 	trans.Transport.(*http.Transport).DisableKeepAlives = true
 	c := &http.Client{Transport: trans}
 
@@ -417,42 +418,43 @@ func TestExpectedOCSPFailures(t *testing.T) {
 	surl.Host = fmt.Sprintf("%s:%s", hostCNs[0], port)
 
 	for desc, tfunc := range testTable {
-		respVal, err := ocsp.ParseResponse(origStaple, issuer.cert)
-		if err != nil {
-			t.Errorf("Unexpected failure parsing ocsp response: %s", err)
-			t.FailNow()
-		}
-		resp, expectSuccess := tfunc(respVal)
-		t.Logf("len of ocsp response from %s: %d", desc, len(resp))
-		testbed.TLS.Certificates[0].OCSPStaple = resp
-		httpresp, err := c.Get(surl.String())
-		if err == nil {
-			if !expectSuccess {
-				t.Errorf("subtest %s: unexpected success", desc)
-				t.Fail()
-			} else {
-				t.Logf("subtest %s: nil error returned, as expected", desc)
-			}
-		} else {
-			if expectSuccess {
-				t.Errorf("subtest %s: unexpected failure: %s", desc, err)
-				t.Fail()
-			} else {
-				t.Logf("subtest %s: expected failure: %s", desc, err)
-			}
-		}
-		if httpresp != nil {
-			_, err = io.Copy(ioutil.Discard, httpresp.Body)
+		t.Run(desc, func(t *testing.T) {
+			respVal, err := ocsp.ParseResponse(origStaple, issuer.cert)
 			if err != nil {
-				t.Errorf("error disposing of the body: %s", err)
-				t.Fail()
+				t.Errorf("Unexpected failure parsing ocsp response: %s", err)
+				t.FailNow()
 			}
-			err = httpresp.Body.Close()
-			if err != nil {
-				t.Fail()
-				t.Errorf("error closing the body: %s", err)
+			resp, expectSuccess := tfunc(respVal)
+			testbed.TLS.Certificates[0].OCSPStaple = resp
+			httpresp, err := c.Get(surl.String())
+			if err == nil {
+				if !expectSuccess {
+					t.Errorf("subtest %s: unexpected success", desc)
+					t.Fail()
+				} else {
+					t.Logf("subtest %s: nil error returned, as expected", desc)
+				}
+			} else {
+				if expectSuccess {
+					t.Errorf("subtest %s: unexpected failure: %s", desc, err)
+					t.Fail()
+				} else {
+					t.Logf("subtest %s: expected failure: %s", desc, err)
+				}
 			}
-		}
+			if httpresp != nil {
+				_, err = io.Copy(ioutil.Discard, httpresp.Body)
+				if err != nil {
+					t.Errorf("error disposing of the body: %s", err)
+					t.Fail()
+				}
+				err = httpresp.Body.Close()
+				if err != nil {
+					t.Fail()
+					t.Errorf("error closing the body: %s", err)
+				}
+			}
+		})
 	}
 	testbed.TLS.Certificates[0].OCSPStaple = origStaple
 }
