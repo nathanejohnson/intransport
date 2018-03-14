@@ -5,7 +5,7 @@ set -e
 SRCDIR=/root
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-hosts=$(sed 's/^127.0.0.1 //' ${DIR}/_testdata/insecurities.txt)
+hosts=$(cat ${DIR}/_testdata/insecurities.txt)
 
 cd $DIR
 

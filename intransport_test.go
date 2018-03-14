@@ -212,11 +212,11 @@ func TestMain(m *testing.M) {
 		certFileName := icn + ".crt"
 		if writeFiles {
 			err = writeCert(filepath.Join(intDir, certFileName), intCrt.Raw)
+			if err != nil {
+				return
+			}
 		}
 
-		if err != nil {
-			return
-		}
 		inm := &intMeta{
 			cert:    intCrt,
 			privKey: priv,
