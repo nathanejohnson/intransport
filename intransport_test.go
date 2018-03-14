@@ -254,10 +254,12 @@ func TestMain(m *testing.M) {
 			if err != nil {
 				return
 			}
+			if writeFiles {
+				err = writeCert(filepath.Join(hostDir, certFileName), crt.Raw)
 
-			err = writeCert(filepath.Join(hostDir, certFileName), crt.Raw)
-			if err != nil {
-				return
+				if err != nil {
+					return
+				}
 			}
 			s = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				w.WriteHeader(200)
@@ -346,18 +348,6 @@ func TestMissingIntermediates(t *testing.T) {
 		}
 	}
 	wg.Wait()
-
-}
-
-func TestSiteOCSPMustStaple(t *testing.T) {
-	c := NewInTransportHTTPClient(nil)
-	resp, err := c.Get("https://blog.cloudflare.com")
-	if err != nil {
-		t.Error(err)
-		t.Fail()
-	}
-	_, _ = io.Copy(ioutil.Discard, resp.Body)
-	_ = resp.Body.Close()
 
 }
 

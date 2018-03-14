@@ -2,7 +2,7 @@
 set -e
 
 
-SRCDIR=/root/
+SRCDIR=/root
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 hosts=$(sed 's/^127.0.0.1 //' ${DIR}/_testdata/insecurities.txt)
@@ -13,13 +13,13 @@ GODEBUG=netdns=cgo go test -c -o intransporttest
 
 docker=$(which docker)
 
-args=(run -t -v "${DIR}":"${SRCDIR}")
+args=(run -t -v "${DIR}":"${SRCDIR}" -w "${SRCDIR}")
 
 for host in $hosts; do
 	args+=(--add-host ${host}:127.0.0.1)
 done
 
-args+=(trusty /bin/bash -c "${SRCDIR}/intransporttest")
+args+=(ubuntu:trusty /bin/bash -c "${SRCDIR}/intransporttest")
 
 exec "$docker" "${args[@]}"
 #echo "${args[@]}"
