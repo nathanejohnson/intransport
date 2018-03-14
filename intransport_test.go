@@ -398,6 +398,12 @@ func signCSR(
 		IssuingCertificateURL: []string{signerURL},
 		OCSPServer:            []string{"https://github.com/nathanejohnson/"},
 		IsCA:                  isCA,
+		ExtraExtensions: []pkix.Extension{
+			{
+				Id:    MustStapleOID,
+				Value: MustStapleValue,
+			},
+		},
 	}
 	if isCA {
 		crtTmpl.KeyUsage = x509.KeyUsageCertSign
