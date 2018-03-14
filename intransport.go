@@ -130,8 +130,7 @@ func (it *InTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Now verify hostname on TLS since we couldn't see it in our
 	// VerifyPeerCertificate callback.
 	if resp.TLS != nil {
-
-		err := validateHost(resp.TLS.PeerCertificates, resp.Request.Host)
+		err := validateHost(resp.TLS.PeerCertificates, resp.Request.URL.Host)
 		if err == nil {
 			err = it.validateOCSP(resp.TLS)
 		}
@@ -142,7 +141,7 @@ func (it *InTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 
 	} else if req.URL.Scheme == "https" {
-		err := fmt.Errorf("https requested, but tls is nil\n")
+		err := fmt.Errorf("https requested, but tls is nil")
 		_ = resp.Body.Close()
 		return nil, err
 	}
@@ -158,12 +157,8 @@ func validateHost(certs []*x509.Certificate, host string) error {
 		host = host[:strings.LastIndex(host, ":")]
 	}
 
-	err := crt.VerifyHostname(host)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	fmt.Printf("host is: %s\n", host)
+	return crt.VerifyHostname(host)
 
 }
 

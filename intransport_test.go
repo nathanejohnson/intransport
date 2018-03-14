@@ -68,11 +68,7 @@ func prepDirs(intDir, hostDir string) error {
 		return err
 	}
 
-	err = os.Mkdir(hostDir, 0755)
-	if err != nil {
-		return err
-	}
-	return nil
+	return os.Mkdir(hostDir, 0755)
 }
 
 func readHosts(iFile, hFile string) error {
