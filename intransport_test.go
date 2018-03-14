@@ -8,7 +8,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/asn1"
 	"encoding/pem"
 	"fmt"
 	"golang.org/x/crypto/ocsp"
@@ -438,7 +437,7 @@ func TestExpectedOCSPFailures(t *testing.T) {
 				t.Logf("subtest %s: nil error returned, as expected", desc)
 			}
 			_, _ = io.Copy(ioutil.Discard, httpresp.Body)
-			httpresp.Body.Close()
+			_ = httpresp.Body.Close()
 		} else {
 			if expectSuccess {
 				t.Errorf("subtest %s: unexpected failure: %s", desc, err)
@@ -565,15 +564,4 @@ func writeCert(certPath string, asn1 []byte) error {
 		_ = f.Close()
 	}()
 	return pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: asn1})
-}
-
-// cribbed from golang.org/x/crypto/ocsp
-type responseASN1 struct {
-	Status   asn1.Enumerated
-	Response responseBytes `asn1:"explicit,tag:0,optional"`
-}
-
-type responseBytes struct {
-	ResponseType asn1.ObjectIdentifier
-	Response     []byte
 }
