@@ -157,7 +157,6 @@ func validateHost(certs []*x509.Certificate, host string) error {
 		host = host[:strings.LastIndex(host, ":")]
 	}
 
-	fmt.Printf("host is: %s\n", host)
 	return crt.VerifyHostname(host)
 
 }

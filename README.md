@@ -4,7 +4,8 @@
 
 
 This is go http transport / client that will fetch intermediate certificates as needed.  Additionally, this will verify
-stapled OCSP responses.  In the event that a certificate is marked with must staple.
+stapled OCSP responses.  In the event that a certificate is marked with must staple, a missing
+stapled OCSP in the response will cause an error.
 
 see https://tools.ietf.org/html/rfc7633
 
