@@ -10,7 +10,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
-	"golang.org/x/crypto/ocsp"
 	"io"
 	"io/ioutil"
 	"math/big"
@@ -24,6 +23,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/ocsp"
 )
 
 type intMeta struct {
@@ -300,9 +301,7 @@ func TestMissingIntermediates(t *testing.T) {
 	c := NewInTransportHTTPClient(&tls.Config{RootCAs: rootPool})
 	it := c.Transport.(*InTransport)
 	it.NextVerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-		t.Logf("Chain length: %d", len(verifiedChains))
 		for i, chain := range verifiedChains {
-			t.Logf("chain %d length: %d", i, len(chain))
 			for j, cert := range chain {
 				t.Logf("chain %d cert %d: CN: %s Issuer CN : %s",
 					i,
@@ -314,32 +313,32 @@ func TestMissingIntermediates(t *testing.T) {
 		return nil
 	}
 	for hname, s := range hostServers {
-		t.Logf("doing %s", hname)
-		surl, _ := url.Parse(s.URL)
-		port := surl.Port()
-		surl.Host = fmt.Sprintf("%s:%s", hname, port)
-		for i := 0; i < 10; i++ {
-			wg.Add(1)
-			go func(hname string, serverURL string) {
-				defer func() {
-					wg.Done()
-				}()
-				t.Logf("fetching %s", serverURL)
-				resp, err := c.Get(serverURL)
-				if err != nil {
-					t.Errorf("got error on %s: %s", hname, err)
-					t.Fail()
-					return
-				}
-				_, err = ioutil.ReadAll(resp.Body)
-				_ = resp.Body.Close()
-				if err != nil {
-					t.Errorf("got error reading from response: %s: %s", hname, err)
-					t.Fail()
-					return
-				}
-			}(hname, surl.String())
-		}
+		t.Run(hname, func(t *testing.T) {
+			surl, _ := url.Parse(s.URL)
+			port := surl.Port()
+			surl.Host = fmt.Sprintf("%s:%s", hname, port)
+			for i := 0; i < 10; i++ {
+				wg.Add(1)
+				go func(hname string, serverURL string) {
+					defer func() {
+						wg.Done()
+					}()
+					resp, err := c.Get(serverURL)
+					if err != nil {
+						t.Errorf("got error on %s: %s", hname, err)
+						t.Fail()
+						return
+					}
+					_, err = ioutil.ReadAll(resp.Body)
+					_ = resp.Body.Close()
+					if err != nil {
+						t.Errorf("got error reading from response: %s: %s", hname, err)
+						t.Fail()
+						return
+					}
+				}(hname, surl.String())
+			}
+		})
 	}
 	wg.Wait()
 
