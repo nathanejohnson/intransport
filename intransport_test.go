@@ -409,6 +409,9 @@ func TestExpectedOCSPFailures(t *testing.T) {
 
 			return rawResp, false
 		},
+		"OCSP Must Staple Missing Staple": func(resp *ocsp.Response) ([]byte, bool) {
+			return nil, false
+		},
 	}
 	surl, _ := url.Parse(testbed.URL)
 	port := surl.Port()
