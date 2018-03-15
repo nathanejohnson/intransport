@@ -313,32 +313,30 @@ func TestMissingIntermediates(t *testing.T) {
 		return nil
 	}
 	for hname, s := range hostServers {
-		t.Run(hname, func(t *testing.T) {
-			surl, _ := url.Parse(s.URL)
-			port := surl.Port()
-			surl.Host = fmt.Sprintf("%s:%s", hname, port)
-			for i := 0; i < 10; i++ {
-				wg.Add(1)
-				go func(hname string, serverURL string) {
-					defer func() {
-						wg.Done()
-					}()
-					resp, err := c.Get(serverURL)
-					if err != nil {
-						t.Errorf("got error on %s: %s", hname, err)
-						t.Fail()
-						return
-					}
-					_, err = ioutil.ReadAll(resp.Body)
-					_ = resp.Body.Close()
-					if err != nil {
-						t.Errorf("got error reading from response: %s: %s", hname, err)
-						t.Fail()
-						return
-					}
-				}(hname, surl.String())
-			}
-		})
+		surl, _ := url.Parse(s.URL)
+		port := surl.Port()
+		surl.Host = fmt.Sprintf("%s:%s", hname, port)
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func(hname string, serverURL string) {
+				defer func() {
+					wg.Done()
+				}()
+				resp, err := c.Get(serverURL)
+				if err != nil {
+					t.Errorf("got error on %s: %s", hname, err)
+					t.Fail()
+					return
+				}
+				_, err = ioutil.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				if err != nil {
+					t.Errorf("got error reading from response: %s: %s", hname, err)
+					t.Fail()
+					return
+				}
+			}(hname, surl.String())
+		}
 	}
 	wg.Wait()
 

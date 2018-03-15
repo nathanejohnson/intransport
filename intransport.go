@@ -212,7 +212,7 @@ func (it *InTransport) validateOCSP(connState *tls.ConnectionState) error {
 			return fmt.Errorf("invalid ocsp validation: %s", ocsp.ResponseStatus(ocspResp.Status).String())
 		}
 
-		if !time.Now().After(ocspResp.NextUpdate) {
+		if !ocspResp.NextUpdate.Before(time.Now()) {
 			// for now, don't fail on an expired staple unless must staple is specified.
 			// maybe revisit this
 			validatedStaple = true
