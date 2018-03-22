@@ -136,11 +136,14 @@ func (it *InTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 
 		if err != nil {
+			// Closing the body without reading from it should signal closing the
+			// underlying net.Conn in the case of keepalives enabled, which we
+			// have on by default.
 			_ = resp.Body.Close()
 			return nil, err
 		}
 
-	} else if req.URL.Scheme == "https" {
+	} else if resp.Request.URL.Scheme == "https" {
 		err := fmt.Errorf("https requested, but tls is nil")
 		_ = resp.Body.Close()
 		return nil, err

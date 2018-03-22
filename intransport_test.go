@@ -50,6 +50,7 @@ var (
 	serial              = int64(9000)
 	rootPool            = x509.NewCertPool()
 	writeFiles          bool
+	logChains           bool
 )
 
 func prepDirs(intDir, hostDir string) error {
@@ -136,6 +137,11 @@ func TestMain(m *testing.M) {
 		writeFiles, _ = strconv.ParseBool(wftxt)
 	}
 
+	lctxt := os.Getenv("LOG_CHAINS")
+	if lctxt != "" {
+		logChains, _ = strconv.ParseBool(lctxt)
+	}
+
 	basePath := "_testdata"
 	intDir := filepath.Join(basePath, "intermediates")
 	hostDir := filepath.Join(basePath, "hosts")
@@ -154,7 +160,7 @@ func TestMain(m *testing.M) {
 	}
 
 	var rootPriv *rsa.PrivateKey
-	rootPriv, err = getKeyAndMaybeWrite(filepath.Join(basePath, "rootCA.key"))
+	rootPriv, err = genKeyAndMaybeWrite(filepath.Join(basePath, "rootCA.key"))
 	if err != nil {
 		return
 	}
@@ -191,7 +197,7 @@ func TestMain(m *testing.M) {
 	for i, icn := range intermediateCNs {
 		fileName := icn + ".key"
 		var priv *rsa.PrivateKey
-		priv, err = getKeyAndMaybeWrite(filepath.Join(intDir, fileName))
+		priv, err = genKeyAndMaybeWrite(filepath.Join(intDir, fileName))
 		if err != nil {
 			return
 		}
@@ -237,7 +243,7 @@ func TestMain(m *testing.M) {
 			hcn := hostCNs[j]
 			fileName = hcn + ".key"
 			certFileName = hcn + ".crt"
-			priv, err = getKeyAndMaybeWrite(filepath.Join(hostDir, fileName))
+			priv, err = genKeyAndMaybeWrite(filepath.Join(hostDir, fileName))
 			if err != nil {
 				return
 			}
@@ -298,19 +304,23 @@ func TestMain(m *testing.M) {
 func TestMissingIntermediates(t *testing.T) {
 
 	wg := &sync.WaitGroup{}
-	c := NewInTransportHTTPClient(&tls.Config{RootCAs: rootPool})
+	trans := NewInTransport(&tls.Config{RootCAs: rootPool})
+	trans.Transport.(*http.Transport).DisableKeepAlives = true
+	c := &http.Client{Transport: trans}
 	it := c.Transport.(*InTransport)
-	it.NextVerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-		for i, chain := range verifiedChains {
-			for j, cert := range chain {
-				t.Logf("chain %d cert %d: CN: %s Issuer CN : %s",
-					i,
-					j,
-					cert.Subject.CommonName, cert.Issuer.CommonName,
-				)
+	if logChains {
+		it.NextVerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+			for i, chain := range verifiedChains {
+				for j, cert := range chain {
+					t.Logf("chain %d cert %d: CN: %s Issuer CN : %s",
+						i,
+						j,
+						cert.Subject.CommonName, cert.Issuer.CommonName,
+					)
+				}
 			}
+			return nil
 		}
-		return nil
 	}
 	for hname, s := range hostServers {
 		surl, _ := url.Parse(s.URL)
@@ -318,24 +328,25 @@ func TestMissingIntermediates(t *testing.T) {
 		surl.Host = fmt.Sprintf("%s:%s", hname, port)
 		for i := 0; i < 10; i++ {
 			wg.Add(1)
-			go func(hname string, serverURL string) {
+			serverURL := surl.String()
+			go t.Run(fmt.Sprintf("%s-%d", hname, i), func(t *testing.T) {
 				defer func() {
 					wg.Done()
 				}()
 				resp, err := c.Get(serverURL)
 				if err != nil {
-					t.Errorf("got error on %s: %s", hname, err)
+					t.Errorf("got error: %s", err)
 					t.Fail()
 					return
 				}
 				_, err = ioutil.ReadAll(resp.Body)
 				_ = resp.Body.Close()
 				if err != nil {
-					t.Errorf("got error reading from response: %s: %s", hname, err)
+					t.Errorf("got error reading from response: %s", err)
 					t.Fail()
 					return
 				}
-			}(hname, surl.String())
+			})
 		}
 	}
 	wg.Wait()
@@ -535,7 +546,7 @@ func NextSerial() *big.Int {
 	return big.NewInt(serial)
 }
 
-func getKeyAndMaybeWrite(keyPath string) (*rsa.PrivateKey, error) {
+func genKeyAndMaybeWrite(keyPath string) (*rsa.PrivateKey, error) {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, err
