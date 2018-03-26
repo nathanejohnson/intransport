@@ -103,8 +103,9 @@ func NewInTransport(tlsc *tls.Config) *InTransport {
 }
 
 // InTransport - this implements an http.RoundTripper and handles the fetching
-// of missing intermediate certificates, and (soon) verifying OCSP stapling
-// in the event there is a "must staple" set on the certificate.
+// of missing intermediate certificates, and verifying OCSP stapling, and
+// in the event there is a "must staple" set on the certificate it will fail on
+// missing staple.
 type InTransport struct {
 	// Specify this method in the situation where you might otherwise have wanted to
 	// install your own VerifyPeerCertificate hook into tls.Config.  If specified,
