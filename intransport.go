@@ -84,21 +84,28 @@ func NewInTransport(tlsc *tls.Config) *InTransport {
 			KeepAlive: 30 * time.Second,
 			DualStack: true,
 		}).DialContext,
+		TLSClientConfig: tlsc,
 	}
+	return NewInTransportFromHTTPTransport(t)
+}
 
+// NewInTransportFromHTTPTransport - this allows you to pass in an http.Transport
+// with pre-configured timeouts.  This is useful where you want to customize.
+// Note that the transport passed in will be modified by this call.  Will panic
+// on a nil transport passed.
+func NewInTransportFromHTTPTransport(transport *http.Transport) *InTransport {
 	it := &InTransport{
-		Transport: t,
+		Transport: transport,
 	}
 
-	if tlsc != nil {
-		it.TLS = tlsc.Clone()
+	if transport.TLSClientConfig != nil {
+		it.TLS = transport.TLSClientConfig.Clone()
 	} else {
 		it.TLS = new(tls.Config)
 	}
 	it.TLS.VerifyPeerCertificate = it.VerifyPeerCertificate
 	it.TLS.InsecureSkipVerify = true
-	t.TLSClientConfig = it.TLS
-
+	transport.TLSClientConfig = it.TLS
 	return it
 }
 
@@ -117,7 +124,7 @@ type InTransport struct {
 	TLS                 *tls.Config
 	TLSHandshakeTimeout time.Duration
 
-	Transport http.RoundTripper
+	Transport *http.Transport
 }
 
 // RoundTrip - this implements the http.RoundTripper interface, and makes it suitable

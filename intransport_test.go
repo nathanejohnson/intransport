@@ -288,8 +288,6 @@ func TestMain(m *testing.M) {
 				},
 			}
 
-			_ = ocspResp
-
 			tlsc.BuildNameToCertificate()
 			s.TLS = tlsc
 			s.StartTLS()
@@ -305,7 +303,7 @@ func TestMissingIntermediates(t *testing.T) {
 
 	wg := &sync.WaitGroup{}
 	trans := NewInTransport(&tls.Config{RootCAs: rootPool})
-	trans.Transport.(*http.Transport).DisableKeepAlives = true
+	trans.Transport.DisableKeepAlives = true
 	c := &http.Client{Transport: trans}
 	it := c.Transport.(*InTransport)
 	if logChains {
@@ -368,7 +366,7 @@ func TestExpectedOCSPFailures(t *testing.T) {
 	trans := NewInTransport(&tls.Config{RootCAs: rootPool})
 
 	// Force connection to re-establish after every test.
-	trans.Transport.(*http.Transport).DisableKeepAlives = true
+	trans.Transport.DisableKeepAlives = true
 	c := &http.Client{Transport: trans}
 
 	type failFunc func(resp *ocsp.Response) (outResp []byte, expectSuccess bool)
