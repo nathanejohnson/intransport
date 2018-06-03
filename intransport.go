@@ -91,8 +91,36 @@ func NewInTransport(tlsc *tls.Config) *InTransport {
 
 // NewInTransportFromHTTPTransport - this allows you to pass in an http.Transport
 // with pre-configured timeouts.  This is useful where you want to customize.
-// Note that the transport passed in will be modified by this call.  Will panic
-// on a nil transport passed.
+// Note that the transport passed in will be modified by this call.  Do not pass
+// in a transport that's already in-use.  Will panic on a nil transport passed.
+// if the passed transport has a TLSClientConfiguration defined, it will be
+// cloned and then modified to integrate InTransport.  The following settings
+// within TLSClientConnection will be modified:
+//
+// * InsecureSkipVerify will be set to true
+//
+// * VerifyPeerCertificate will be set to our InTransport.VerifyPeerCertificate
+//
+// As noted elsewhere, InsecureSkipVerify must be set in order for our
+// VerifyPeerCertificate method to get called in the case of missing
+// intermediates.  We still do the full certificate checking here, we just
+// go about it a different way.
+//
+//     it := intransport.NewInTransportFromHTTPTransport(&http.Transport {
+//         Proxy:                 http.ProxyFromEnvironment,
+//         MaxIdleConns:          100,
+//         IdleConnTimeout:       90 * time.Second,
+//         ExpectContinueTimeout: 1 * time.Second,
+//         TLSHandshakeTimeout:   10 * time.Second,
+//         DialContext: (&net.Dialer{
+//             Timeout:   30 * time.Second,
+//             KeepAlive: 30 * time.Second,
+//             DualStack: true,
+//         }).DialContext,
+//     }
+//     c := &http.Client{
+//         Transport: it,
+//     }
 func NewInTransportFromHTTPTransport(transport *http.Transport) *InTransport {
 	it := &InTransport{
 		Transport: transport,
@@ -159,6 +187,15 @@ func (it *InTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	return resp, nil
 
+}
+
+// SetNextVerifyPeerCertificate - this is a setter method to specify a method
+// to be called after a successful InTransport TLS validation.
+// Specify this method in the situation where you might otherwise have wanted to
+// install your own VerifyPeerCertificate hook into tls.Config.  verifiedChains will
+// contain appropriate data including any intermediates that needed to be downloaded.
+func (it *InTransport) SetNextVerifyPeerCertificate(verifier PeerCertVerifier) {
+	it.NextVerifyPeerCertificate = verifier
 }
 
 func validateHost(certs []*x509.Certificate, host string) error {
