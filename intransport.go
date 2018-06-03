@@ -241,8 +241,9 @@ func (it *InTransport) validateOCSP(connState *tls.ConnectionState) error {
 			if bytes.Equal(ext.Value, MustStapleValue) {
 				mustStaple = true
 			} else {
-				// It's vaguely possible that there is a list of extensions
-				// and one of them is status_request (5).  check for that.
+				// technically the value is a DER encoded SEQUENCE OF INTEGER,
+				// so see if there is more than one integer specified.  doubt
+				// this will be seen in the wild.
 				tlsExts := []int{}
 				_, err := asn1.Unmarshal(ext.Value, &tlsExts)
 				if err != nil {
