@@ -480,6 +480,7 @@ func makeCSR(cname string, priv *rsa.PrivateKey) (request *x509.CertificateReque
 				Locality:           []string{"Nashville"},
 				CommonName:         cname,
 			},
+			DNSNames:           []string{cname},
 			SignatureAlgorithm: x509.SHA256WithRSA,
 		},
 		priv)
@@ -515,6 +516,7 @@ func signCSR(
 		IssuingCertificateURL: []string{signerURL},
 		OCSPServer:            []string{"https://github.com/nathanejohnson/"},
 		IsCA:                  isCA,
+		DNSNames:              csr.DNSNames,
 		ExtraExtensions: []pkix.Extension{
 			{
 				Id:    MustStapleOID,
