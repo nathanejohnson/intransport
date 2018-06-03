@@ -106,7 +106,7 @@ func NewInTransport(tlsc *tls.Config) *InTransport {
 // intermediates.  We still do the full certificate checking here, we just
 // go about it a different way.
 //
-//     it := intransport.NewInTransportFromHTTPTransport(&http.Transport {
+//     it := intransport.NewInTransportFromHTTPTransport(&http.Transport{
 //         Proxy:                 http.ProxyFromEnvironment,
 //         MaxIdleConns:          100,
 //         IdleConnTimeout:       90 * time.Second,
