@@ -21,21 +21,32 @@ type certCacheEntry struct {
 	sync.RWMutex
 	cert *x509.Certificate
 }
+
+// TODO - consider replacing this with google group cache
 type certCache struct {
 	sync.Mutex
 	m map[string]*certCacheEntry
 	c *http.Client
 }
 
+// TODO - look into status_request_v2
+const statusRequestExtension = 5
+
 var (
 	// MustStapleValue is the value in the MustStaple extension.
+	// DER encoding of the status_request extension, 5.
+	// https://tools.ietf.org/html/rfc6066#section-1.1
 	MustStapleValue = []byte{0x30, 0x03, 0x02, 0x01, 0x05}
 
-	//MustStapleOID is the OID of the must staple
+	// MustStapleOID is the OID of the must staple.
+	//
+	// Must staple oid is id-pe-tlsfeature  as defined here
+	// https://tools.ietf.org/html/rfc7633#section-6
 	MustStapleOID = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 1, 24}
 
 	cc = &certCache{
 		m: make(map[string]*certCacheEntry),
+		// client used for fetching intermediates.
 		c: &http.Client{
 			Transport: &http.Transport{
 				Proxy: http.ProxyFromEnvironment,
@@ -44,9 +55,16 @@ var (
 					KeepAlive: 0,
 					DualStack: true,
 				}).DialContext,
-				MaxIdleConns:          100,
-				IdleConnTimeout:       90 * time.Second,
-				TLSHandshakeTimeout:   3 * time.Second,
+
+				// Since we cache responses, all http activity should be
+				// one-and-done.
+				DisableKeepAlives: true,
+
+				// This shouldn't be needed, since I don't believe
+				// the server url locations are ever TLS enabled?
+				TLSHandshakeTimeout: 3 * time.Second,
+
+				// This also shouldn't be needed, but doesn't hurt anything
 				ExpectContinueTimeout: 1 * time.Second,
 			},
 		},
@@ -122,6 +140,7 @@ func NewInTransport(tlsc *tls.Config) *InTransport {
 //         Transport: it,
 //     }
 func NewInTransportFromHTTPTransport(transport *http.Transport) *InTransport {
+	transport.TLSClientConfig.BuildNameToCertificate()
 	it := &InTransport{
 		Transport: transport,
 	}
@@ -221,6 +240,20 @@ func (it *InTransport) validateOCSP(connState *tls.ConnectionState) error {
 		if ext.Id.Equal(MustStapleOID) {
 			if bytes.Equal(ext.Value, MustStapleValue) {
 				mustStaple = true
+			} else {
+				// It's vaguely possible that there is a list of extensions
+				// and one of them is status_request (5).  check for that.
+				tlsExts := []int{}
+				_, err := asn1.Unmarshal(ext.Value, &tlsExts)
+				if err != nil {
+					return fmt.Errorf("malformed must staple extension: %s", err)
+				}
+				for _, tlsExt := range tlsExts {
+					if tlsExt == statusRequestExtension {
+						mustStaple = true
+						break
+					}
+				}
 			}
 			break
 		}
@@ -418,9 +451,7 @@ func fetchIssuingCert(cert *x509.Certificate) (*x509.Certificate, error) {
 
 	// Once we're here, cce is locked, cc is unlocked
 	// defer is nowhere near as slow as the code below
-	defer func() {
-		cce.Unlock()
-	}()
+	defer cce.Unlock()
 
 	// I've yet to see more than one IssuingCertificateURL,
 	// but just in case...
