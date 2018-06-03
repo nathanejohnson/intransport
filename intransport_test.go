@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -172,7 +173,7 @@ func TestMain(m *testing.M) {
 	}
 	var rootCert *x509.Certificate
 
-	rootCert, err = signCSR(csr, rootPriv, nil, "", true)
+	rootCert, err = signCSR(csr, rootPriv, nil, "", true, false)
 	if err != nil {
 		return
 	}
@@ -209,7 +210,7 @@ func TestMain(m *testing.M) {
 		}
 		var intCrt *x509.Certificate
 
-		intCrt, err = signCSR(csr, rootPriv, rootCert, rootIntM.caIssuerURL, true)
+		intCrt, err = signCSR(csr, rootPriv, rootCert, rootIntM.caIssuerURL, true, false)
 
 		if err != nil {
 			return
@@ -252,7 +253,7 @@ func TestMain(m *testing.M) {
 				return
 			}
 			var crt *x509.Certificate
-			crt, err = signCSR(csr, inm.privKey, inm.cert, inm.caIssuerURL, false)
+			crt, err = signCSR(csr, inm.privKey, inm.cert, inm.caIssuerURL, false, j%2 == 0)
 			if err != nil {
 				return
 			}
@@ -497,12 +498,18 @@ func signCSR(
 	privKey *rsa.PrivateKey,
 	signCert *x509.Certificate,
 	signerURL string,
-	isCA bool) (*x509.Certificate, error) {
+	isCA bool,
+	multiMustStaple bool) (*x509.Certificate, error) {
 
 	subjKeyID := make([]byte, 8)
 	_, err := rand.Read(subjKeyID)
 	if err != nil {
 		panic(err)
+	}
+	extVal := MustStapleValue
+
+	if multiMustStaple {
+		extVal, _ = asn1.Marshal([]int{2, 3, 4, statusRequestExtension})
 	}
 	crtTmpl := &x509.Certificate{
 		Signature:             csr.Signature,
@@ -522,7 +529,7 @@ func signCSR(
 		ExtraExtensions: []pkix.Extension{
 			{
 				Id:    MustStapleOID,
-				Value: MustStapleValue,
+				Value: extVal,
 			},
 		},
 	}
