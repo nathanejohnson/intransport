@@ -166,7 +166,7 @@ func TestMain(m *testing.M) {
 	}
 
 	var csr *x509.CertificateRequest
-	csr, err = makeCSR("Mister Sunshine's Root CA", rootPriv)
+	csr, err = makeCSR("Mister Sunshine's Root CA", rootPriv, false)
 	if err != nil {
 		return
 	}
@@ -203,7 +203,7 @@ func TestMain(m *testing.M) {
 		}
 
 		var csr *x509.CertificateRequest
-		csr, err = makeCSR(fmt.Sprintf("%s intermediate CA", icn), priv)
+		csr, err = makeCSR(fmt.Sprintf("%s intermediate CA", icn), priv, false)
 		if err != nil {
 			return
 		}
@@ -247,7 +247,7 @@ func TestMain(m *testing.M) {
 			if err != nil {
 				return
 			}
-			csr, err = makeCSR(hcn, priv)
+			csr, err = makeCSR(hcn, priv, true)
 			if err != nil {
 				return
 			}
@@ -468,22 +468,24 @@ func TestExpectedOCSPFailures(t *testing.T) {
 	testbed.TLS.Certificates[0].OCSPStaple = origStaple
 }
 
-func makeCSR(cname string, priv *rsa.PrivateKey) (request *x509.CertificateRequest, err error) {
-	csrBytes, err := x509.CreateCertificateRequest(rand.Reader,
-		&x509.CertificateRequest{
-			Version: 0,
-			Subject: pkix.Name{
-				Organization:       []string{"Mister Sunshine's fun shop"},
-				OrganizationalUnit: []string{"R&D"},
-				Country:            []string{"US"},
-				Province:           []string{"Tennessee"},
-				Locality:           []string{"Nashville"},
-				CommonName:         cname,
-			},
-			DNSNames:           []string{cname},
-			SignatureAlgorithm: x509.SHA256WithRSA,
+func makeCSR(cname string, priv *rsa.PrivateKey, addSAN bool) (request *x509.CertificateRequest, err error) {
+	req := &x509.CertificateRequest{
+		Version: 0,
+		Subject: pkix.Name{
+			Organization:       []string{"Mister Sunshine's fun shop"},
+			OrganizationalUnit: []string{"R&D"},
+			Country:            []string{"US"},
+			Province:           []string{"Tennessee"},
+			Locality:           []string{"Nashville"},
+			CommonName:         cname,
 		},
-		priv)
+		DNSNames:           []string{cname},
+		SignatureAlgorithm: x509.SHA256WithRSA,
+	}
+	if addSAN {
+		req.DNSNames = []string{cname}
+	}
+	csrBytes, err := x509.CreateCertificateRequest(rand.Reader, req, priv)
 	if err != nil {
 		return nil, err
 	}
