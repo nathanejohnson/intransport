@@ -140,7 +140,6 @@ func NewInTransport(tlsc *tls.Config) *InTransport {
 //         Transport: it,
 //     }
 func NewInTransportFromHTTPTransport(transport *http.Transport) *InTransport {
-	transport.TLSClientConfig.BuildNameToCertificate()
 	it := &InTransport{
 		Transport: transport,
 	}
@@ -244,7 +243,7 @@ func (it *InTransport) validateOCSP(connState *tls.ConnectionState) error {
 				// technically the value is a DER encoded SEQUENCE OF INTEGER,
 				// so see if there is more than one integer specified.  doubt
 				// this will be seen in the wild.
-				tlsExts := []int{}
+				var tlsExts []int
 				_, err := asn1.Unmarshal(ext.Value, &tlsExts)
 				if err != nil {
 					return fmt.Errorf("malformed must staple extension: %s", err)
