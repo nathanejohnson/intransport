@@ -14,6 +14,7 @@ import (
 	"io"
 	"io/ioutil"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -306,9 +307,8 @@ func TestMissingIntermediates(t *testing.T) {
 	trans := NewInTransport(&tls.Config{RootCAs: rootPool})
 	trans.Transport.DisableKeepAlives = true
 	c := &http.Client{Transport: trans}
-	it := c.Transport.(*InTransport)
 	if logChains {
-		it.NextVerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+		trans.NextVerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 			for i, chain := range verifiedChains {
 				for j, cert := range chain {
 					t.Logf("chain %d cert %d: CN: %s Issuer CN : %s",
@@ -349,6 +349,43 @@ func TestMissingIntermediates(t *testing.T) {
 		}
 	}
 	wg.Wait()
+
+}
+
+func TestHostNameValidation(t *testing.T) {
+	hName1 := hostCNs[0]
+	hName2 := hostCNs[1]
+	tServer1 := hostServers[hName1]
+	tServer2 := hostServers[hName2]
+	goodURL, _ := url.Parse(tServer1.URL)
+	_, p, _ := net.SplitHostPort(goodURL.Host)
+	goodURL.Host = fmt.Sprintf("%s:%s", hName1, p)
+	badURL, _ := url.Parse(tServer2.URL)
+	_, p, _ = net.SplitHostPort(badURL.Host)
+	badURL.Host = fmt.Sprintf("%s:%s", hName1, p)
+
+	trans := NewInTransport(&tls.Config{RootCAs: rootPool})
+	c := &http.Client{Transport: trans}
+	resp, err := c.Get(goodURL.String())
+
+	if err != nil {
+		t.Errorf("unexpected error on good url: %s", err)
+		t.Fail()
+		return
+	}
+
+	ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	resp, err = c.Get(badURL.String())
+	if err == nil {
+		t.Errorf("badURL succeeded, should have failed")
+		t.Fail()
+		ioutil.ReadAll(resp.Body)
+		resp.Body.Close()
+	} else {
+		t.Logf("expected failure for badURL: %s", err)
+	}
 
 }
 

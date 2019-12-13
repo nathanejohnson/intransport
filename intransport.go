@@ -91,67 +91,45 @@ func NewInTransportHTTPClient(tlsc *tls.Config) *http.Client {
 //        Transport: it,
 //    }
 func NewInTransport(tlsc *tls.Config) *InTransport {
+	d := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	return NewInTransportFromDialer(d, tlsc)
+}
+
+// NewInTransportFromDialer - this allows you to pass in an net.Dialer
+// with pre-configured timeouts.  This is useful where you want to customize.
+// Further customization is possible by tweaking the InTransport.Transport
+func NewInTransportFromDialer(dialer *net.Dialer, tlsc *tls.Config) *InTransport {
 	t := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-			DualStack: true,
-		}).DialContext,
-		TLSClientConfig: tlsc,
+		DialContext:           dialer.DialContext,
+		TLSClientConfig:       tlsc,
 	}
-	return NewInTransportFromHTTPTransport(t)
-}
-
-// NewInTransportFromHTTPTransport - this allows you to pass in an http.Transport
-// with pre-configured timeouts.  This is useful where you want to customize.
-// Note that the transport passed in will be modified by this call.  Do not pass
-// in a transport that's already in-use.  Will panic on a nil transport passed.
-// if the passed transport has a TLSClientConfiguration defined, it will be
-// cloned and then modified to integrate InTransport.  The following settings
-// within TLSClientConnection will be modified:
-//
-// * InsecureSkipVerify will be set to true
-//
-// * VerifyPeerCertificate will be set to our InTransport.VerifyPeerCertificate
-//
-// As noted elsewhere, InsecureSkipVerify must be set in order for our
-// VerifyPeerCertificate method to get called in the case of missing
-// intermediates.  We still do the full certificate checking here, we just
-// go about it a different way.
-//
-//     it := intransport.NewInTransportFromHTTPTransport(&http.Transport{
-//         Proxy:                 http.ProxyFromEnvironment,
-//         MaxIdleConns:          100,
-//         IdleConnTimeout:       90 * time.Second,
-//         ExpectContinueTimeout: 1 * time.Second,
-//         TLSHandshakeTimeout:   10 * time.Second,
-//         DialContext: (&net.Dialer{
-//             Timeout:   30 * time.Second,
-//             KeepAlive: 30 * time.Second,
-//             DualStack: true,
-//         }).DialContext,
-//     }
-//     c := &http.Client{
-//         Transport: it,
-//     }
-func NewInTransportFromHTTPTransport(transport *http.Transport) *InTransport {
 	it := &InTransport{
-		Transport: transport,
+		Transport:                 t,
+		NextVerifyPeerCertificate: tlsc.VerifyPeerCertificate,
+		Dialer:                    dialer,
 	}
 
-	if transport.TLSClientConfig != nil {
-		it.TLS = transport.TLSClientConfig.Clone()
-	} else {
-		it.TLS = new(tls.Config)
+	it.TLS = tlsc.Clone()
+	t.DialTLS = func(network, addr string) (net.Conn, error) {
+		h, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		conf := it.TLS.Clone()
+		conf.InsecureSkipVerify = true
+		conf.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+			return it.verifyPeerCertificate(h, rawCerts, verifiedChains)
+		}
+		return tls.DialWithDialer(it.Dialer, network, addr, conf)
 	}
-	it.TLS.VerifyPeerCertificate = it.VerifyPeerCertificate
-	it.TLS.InsecureSkipVerify = true
-	transport.TLSClientConfig = it.TLS
 	return it
 }
 
@@ -171,6 +149,7 @@ type InTransport struct {
 	TLSHandshakeTimeout time.Duration
 
 	Transport *http.Transport
+	Dialer    *net.Dialer
 }
 
 // RoundTrip - this implements the http.RoundTripper interface, and makes it suitable
@@ -181,13 +160,8 @@ func (it *InTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return resp, err
 	}
 
-	// Now verify hostname on TLS since we couldn't see it in our
-	// VerifyPeerCertificate callback.
 	if resp.TLS != nil {
-		err := validateHost(resp.TLS.PeerCertificates, resp.Request.URL.Host)
-		if err == nil {
-			err = it.validateOCSP(resp.TLS)
-		}
+		err = it.validateOCSP(resp.TLS)
 
 		if err != nil {
 			// Closing the body without reading from it should signal closing the
@@ -266,7 +240,7 @@ func (it *InTransport) validateOCSP(connState *tls.ConnectionState) error {
 		// Validate the staple if present
 		// Let's grab the chain
 
-		chains, err := it.verifyChains(peers)
+		chains, err := it.verifyChains(connState.ServerName, peers)
 		if err != nil {
 			return err
 		}
@@ -289,7 +263,6 @@ func (it *InTransport) validateOCSP(connState *tls.ConnectionState) error {
 			return err
 		}
 		if ocspResp.Status != ocsp.Good {
-
 			return fmt.Errorf("invalid ocsp validation: %s", ocsp.ResponseStatus(ocspResp.Status).String())
 		}
 
@@ -310,9 +283,9 @@ func (it *InTransport) validateOCSP(connState *tls.ConnectionState) error {
 // lifted from standard library net/http/http.go
 func hasPort(s string) bool { return strings.LastIndex(s, ":") > strings.LastIndex(s, "]") }
 
-// VerifyPeerCertificate - this is the method that is to be plugged into
+// verifyPeerCertificate - this is the method that is to be plugged into
 // tls.Config VerifyPeerCertificate.  If using this method inside of a custom
-// built htttp.Transport, you must also set InsecureSkipVerify to true.  When
+// built http.Transport, you must also set InsecureSkipVerify to true.  When
 // set to false, a certificate that isn't trusted to the root and has missing
 // intermediate certs will prevent VerifyPeerCertificate from being called.
 // This method will still ensure that a valid chain exists from the presented
@@ -323,7 +296,7 @@ func hasPort(s string) bool { return strings.LastIndex(s, ":") > strings.LastInd
 // connection will fail .  If a chain can be established, then the optional
 // NextVerifyPeerCertificate() method will be called, if specified.  If this
 // method returns an error, it will stop the connection.
-func (it *InTransport) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+func (it *InTransport) verifyPeerCertificate(serverName string, rawCerts [][]byte, _ [][]*x509.Certificate) error {
 	if len(rawCerts) == 0 {
 		return fmt.Errorf("no certificates supplied")
 	}
@@ -339,7 +312,7 @@ func (it *InTransport) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Cert
 
 	var err error
 	var verifiedChains [][]*x509.Certificate
-	verifiedChains, err = it.verifyChains(PeerCertificates)
+	verifiedChains, err = it.verifyChains(serverName, PeerCertificates)
 	if err != nil {
 		return err
 	}
@@ -352,7 +325,7 @@ func (it *InTransport) VerifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Cert
 
 // verifyChains - this takes cert(s) and does it's best to find a path to a recognized root,
 // fetching intermediate certs that may be missing.
-func (it *InTransport) verifyChains(certs []*x509.Certificate) (chains [][]*x509.Certificate, err error) {
+func (it *InTransport) verifyChains(serverName string, certs []*x509.Certificate) (chains [][]*x509.Certificate, err error) {
 	cp := x509.NewCertPool()
 	if len(certs) > 1 {
 		for _, cert := range certs[1:] {
@@ -363,6 +336,7 @@ func (it *InTransport) verifyChains(certs []*x509.Certificate) (chains [][]*x509
 	chains, err = certs[0].Verify(x509.VerifyOptions{
 		Roots:         it.TLS.RootCAs,
 		Intermediates: cp,
+		DNSName:       serverName,
 	})
 
 	if err != nil {
@@ -378,6 +352,7 @@ func (it *InTransport) verifyChains(certs []*x509.Certificate) (chains [][]*x509
 		chains, err = certs[0].Verify(x509.VerifyOptions{
 			Roots:         it.TLS.RootCAs,
 			Intermediates: cp,
+			DNSName:       serverName,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("chain failed verification after fetch: %s", err)
@@ -386,13 +361,12 @@ func (it *InTransport) verifyChains(certs []*x509.Certificate) (chains [][]*x509
 	return
 }
 
+// This attempts to build the missing links of the chain, and returns any intermediates it may have fetched.
 func (it *InTransport) buildChain(cert *x509.Certificate) ([]*x509.Certificate, error) {
 	tmpCert := cert
 	var retval []*x509.Certificate
 	var lastError error
-	for {
-		// TODO - set a limit to how many iterations of this loop
-		// what's sane?
+	for i := 0; i < 5; i++ {
 		_, lastError = tmpCert.Verify(x509.VerifyOptions{
 			Roots: it.TLS.RootCAs,
 			// We don't care about dns names here
@@ -436,7 +410,7 @@ func fetchIssuingCert(cert *x509.Certificate) (*x509.Certificate, error) {
 		cc.Unlock()
 		cce.Lock()
 		crt := cce.cert
-
+		// crt may be nil if fetch failed on a prior attempt
 		if crt != nil {
 			cce.Unlock()
 			return crt, nil
@@ -450,6 +424,7 @@ func fetchIssuingCert(cert *x509.Certificate) (*x509.Certificate, error) {
 	}
 
 	// Once we're here, cce is locked, cc is unlocked
+	// Now we attempt to fetch the issuing cert.
 	// defer is nowhere near as slow as the code below
 	defer cce.Unlock()
 
