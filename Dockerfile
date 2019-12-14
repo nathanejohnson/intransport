@@ -4,4 +4,5 @@ COPY . /root
 
 WORKDIR /root
 
-RUN apk --no-cache add gcc && apk --no-cache add musl-dev && go test -v
+ENV CGO_ENABLED=0
+RUN go test -v

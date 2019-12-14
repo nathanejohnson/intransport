@@ -8,12 +8,12 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 hosts=$(cat ${DIR}/_testdata/insecurities.txt)
 
 cd $DIR
+docker=$(which docker)
 
 LABEL="intransport_test"
-docker rm -f ${LABEL} || true
-docker rmi ${LABEL} || true
+${docker} rm -f ${LABEL} || true
+${docker} rmi ${LABEL} || true
 
-docker=$(which docker)
 
 args=(build --label ${LABEL} -t ${LABEL})
 
@@ -25,5 +25,3 @@ done
 args+=( . )
 
 exec "$docker" "${args[@]}"
-
-docker run ${LABEL}
