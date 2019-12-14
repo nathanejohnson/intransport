@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -161,9 +162,11 @@ func (it *InTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	if resp.TLS != nil {
-		err = it.validateOCSP(resp.TLS)
+		host, _ := parseHost(req.Host)
+		err = it.validateOCSP(host, resp.TLS)
 
 		if err != nil {
+			err = fmt.Errorf("error handling OCSP response: %w", err)
 			// Closing the body without reading from it should signal closing the
 			// underlying net.Conn in the case of keepalives enabled, which we
 			// have on by default.
@@ -190,21 +193,24 @@ func (it *InTransport) SetNextVerifyPeerCertificate(verifier PeerCertVerifier) {
 	it.NextVerifyPeerCertificate = verifier
 }
 
-func validateHost(certs []*x509.Certificate, host string) error {
-	crt := certs[0]
+// ErrNoPeerCerts - this is returned when there are no peer certs presented.
+var ErrNoPeerCerts = errors.New("no peer certificates presented")
 
-	if hasPort(host) {
-		host = host[:strings.LastIndex(host, ":")]
-	}
+// ErrInvalidChainsLength - this is returned when the chains length is less than 1
+var ErrInvalidChainsLength = errors.New("invalid chains length")
 
-	return crt.VerifyHostname(host)
+// ErrInvalidChainLength - this is returned when the chain length is less than 2 for a "chains" entry,
+// IOW there must be at leat one peer cert in addition to the leaf.
+var ErrInvalidChainLength = errors.New("invalid chain length")
 
-}
+// ErrOCSPNotStapled - this iss returned when the OCSP Must Staple extension is present but a valid
+// OCSP staple was not found.
+var ErrOCSPNotStapled = errors.New("certificate was marked with OCSP must-staple and no staple could be verified")
 
-func (it *InTransport) validateOCSP(connState *tls.ConnectionState) error {
+func (it *InTransport) validateOCSP(serverName string, connState *tls.ConnectionState) error {
 	peers := connState.PeerCertificates
 	if len(peers) == 0 {
-		return fmt.Errorf("no peer certificates presented")
+		return ErrNoPeerCerts
 	}
 	crt := peers[0]
 
@@ -220,7 +226,7 @@ func (it *InTransport) validateOCSP(connState *tls.ConnectionState) error {
 				var tlsExts []int
 				_, err := asn1.Unmarshal(ext.Value, &tlsExts)
 				if err != nil {
-					return fmt.Errorf("malformed must staple extension: %s", err)
+					return fmt.Errorf("malformed must staple extension: %w", err)
 				}
 				for _, tlsExt := range tlsExts {
 					if tlsExt == statusRequestExtension {
@@ -239,19 +245,18 @@ func (it *InTransport) validateOCSP(connState *tls.ConnectionState) error {
 
 		// Validate the staple if present
 		// Let's grab the chain
-
-		chains, err := it.verifyChains(connState.ServerName, peers)
+		chains, err := it.verifyChains(serverName, connState.PeerCertificates)
 		if err != nil {
 			return err
 		}
 
 		var chain []*x509.Certificate
 		if len(chains) < 1 {
-			err = fmt.Errorf("invalid chains length")
+			err = ErrInvalidChainsLength
 		} else {
 			chain = chains[0]
 			if len(chain) < 2 {
-				err = fmt.Errorf("invalid chain length")
+				err = ErrInvalidChainLength
 			}
 		}
 		if err != nil {
@@ -275,7 +280,7 @@ func (it *InTransport) validateOCSP(connState *tls.ConnectionState) error {
 	}
 
 	if mustStaple && !validatedStaple {
-		return fmt.Errorf("certificate was marked with OCSP must-staple and no staple could be verified")
+		return ErrOCSPNotStapled
 	}
 	return nil
 }
@@ -283,13 +288,16 @@ func (it *InTransport) validateOCSP(connState *tls.ConnectionState) error {
 // lifted from standard library net/http/http.go
 func hasPort(s string) bool { return strings.LastIndex(s, ":") > strings.LastIndex(s, "]") }
 
-// verifyPeerCertificate - this is the method that is to be plugged into
-// tls.Config VerifyPeerCertificate.  If using this method inside of a custom
-// built http.Transport, you must also set InsecureSkipVerify to true.  When
-// set to false, a certificate that isn't trusted to the root and has missing
-// intermediate certs will prevent VerifyPeerCertificate from being called.
-// This method will still ensure that a valid chain exists from the presented
-// certificates(s) to a trusted root certificate.  The difference between this
+// parse of host part in the case of host:port
+func parseHost(host string) (string, error) {
+	if hasPort(host) {
+		h, _, err := net.SplitHostPort(host)
+		return h, err
+	}
+	return host, nil
+}
+
+// verifyPeerCertificate - The difference between this
 // and the default TLS verification is that missing intermediates will be
 // fetched until either a valid path to a trusted root is found or no further
 // intermediates can be found.  If a chain cannot be established, the
@@ -333,6 +341,12 @@ func (it *InTransport) verifyChains(serverName string, certs []*x509.Certificate
 		}
 	}
 
+	// Validate hostname first, because chains are comparatively expensive
+	if err := certs[0].VerifyHostname(serverName); err != nil {
+		return nil, err
+	}
+
+	// Now check the chains.
 	chains, err = certs[0].Verify(x509.VerifyOptions{
 		Roots:         it.TLS.RootCAs,
 		Intermediates: cp,
@@ -340,9 +354,10 @@ func (it *InTransport) verifyChains(serverName string, certs []*x509.Certificate
 	})
 
 	if err != nil {
+		// This will be a chain failure.  Try to fetch intermediates now.
 		var dledIntermediates []*x509.Certificate
 
-		dledIntermediates, err = it.buildChain(certs[len(certs)-1])
+		dledIntermediates, err = it.buildMissingChain(certs[len(certs)-1])
 		if err != nil {
 			return nil, fmt.Errorf("failed to find chain: %s", err)
 		}
@@ -355,14 +370,14 @@ func (it *InTransport) verifyChains(serverName string, certs []*x509.Certificate
 			DNSName:       serverName,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("chain failed verification after fetch: %s", err)
+			return nil, fmt.Errorf("chain failed verification after fetch: %w", err)
 		}
 	}
 	return
 }
 
 // This attempts to build the missing links of the chain, and returns any intermediates it may have fetched.
-func (it *InTransport) buildChain(cert *x509.Certificate) ([]*x509.Certificate, error) {
+func (it *InTransport) buildMissingChain(cert *x509.Certificate) ([]*x509.Certificate, error) {
 	tmpCert := cert
 	var retval []*x509.Certificate
 	var lastError error
@@ -388,6 +403,7 @@ func (it *InTransport) buildChain(cert *x509.Certificate) ([]*x509.Certificate, 
 	return retval, nil
 }
 
+// This grabs the issuing cert from the issuing certificate extension.
 func fetchIssuingCert(cert *x509.Certificate) (*x509.Certificate, error) {
 	// this attempts to do two things:
 	// 1) avoid stampede problem - minimizes fetches of a cert on cache miss

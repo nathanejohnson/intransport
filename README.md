@@ -16,7 +16,7 @@ import (
 	"io/ioutil"
 	"os"
 	
-	it "github.com/nathanejohnson/intransport"
+	it "github.com/nathanejohnson/intransport/v2"
 )
 
 func main() {
@@ -37,4 +37,4 @@ func main() {
 ```
 
 
-
+Note: v2 package supports only go 1.13 and newer due to error wrapping.

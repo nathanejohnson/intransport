@@ -306,6 +306,7 @@ func TestMissingIntermediates(t *testing.T) {
 	wg := &sync.WaitGroup{}
 	trans := NewInTransport(&tls.Config{RootCAs: rootPool})
 	trans.Transport.DisableKeepAlives = true
+	trans.Transport.MaxIdleConnsPerHost = -1
 	c := &http.Client{Transport: trans}
 	if logChains {
 		trans.NextVerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
@@ -334,7 +335,7 @@ func TestMissingIntermediates(t *testing.T) {
 				}()
 				resp, err := c.Get(serverURL)
 				if err != nil {
-					t.Errorf("got error: %s", err)
+					t.Errorf("got error fetching %s: %s", serverURL, err)
 					t.Fail()
 					return
 				}
@@ -374,15 +375,15 @@ func TestHostNameValidation(t *testing.T) {
 		return
 	}
 
-	ioutil.ReadAll(resp.Body)
-	resp.Body.Close()
+	_, _ = ioutil.ReadAll(resp.Body)
+	_ = resp.Body.Close()
 
 	resp, err = c.Get(badURL.String())
 	if err == nil {
 		t.Errorf("badURL succeeded, should have failed")
 		t.Fail()
-		ioutil.ReadAll(resp.Body)
-		resp.Body.Close()
+		_, _ = ioutil.ReadAll(resp.Body)
+		_ = resp.Body.Close()
 	} else {
 		t.Logf("expected failure for badURL: %s", err)
 	}
