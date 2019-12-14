@@ -23,7 +23,6 @@ type certCacheEntry struct {
 	cert *x509.Certificate
 }
 
-// TODO - consider replacing this with google group cache
 type certCache struct {
 	sync.Mutex
 	m map[string]*certCacheEntry
@@ -124,6 +123,8 @@ func NewInTransportFromDialer(dialer *net.Dialer, tlsc *tls.Config) *InTransport
 			return nil, err
 		}
 		conf := it.TLS.Clone()
+		// Must configure InsecureSkipVerify to ensure that VerifyPeerCertificate
+		// is always called, which allows us to fetch missing intermediates.
 		conf.InsecureSkipVerify = true
 		conf.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 			return it.verifyPeerCertificate(h, rawCerts, verifiedChains)
@@ -165,7 +166,7 @@ func (it *InTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		err = it.validateOCSP(host, resp.TLS)
 
 		if err != nil {
-			err = fmt.Errorf("error handling OCSP response: %w", err)
+			err = fmt.Errorf("intransport: error handling OCSP response: %w", err)
 			// Closing the body without reading from it should signal closing the
 			// underlying net.Conn in the case of keepalives enabled, which we
 			// have on by default.
@@ -174,7 +175,7 @@ func (it *InTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 
 	} else if resp.Request.URL.Scheme == "https" {
-		err := fmt.Errorf("https requested, but tls is nil")
+		err := fmt.Errorf("intransport: https requested, but tls is nil")
 		_ = resp.Body.Close()
 		return nil, err
 	}
@@ -221,7 +222,8 @@ func (it *InTransport) validateOCSP(serverName string, connState *tls.Connection
 			} else {
 				// technically the value is a DER encoded SEQUENCE OF INTEGER,
 				// so see if there is more than one integer specified.  doubt
-				// this will be seen in the wild.
+				// this will be seen in the wild, currently there is only one
+				// defined value per RFC.  but hey, due diligence.  all that.
 				var tlsExts []int
 				_, err := asn1.Unmarshal(ext.Value, &tlsExts)
 				if err != nil {
@@ -326,7 +328,7 @@ func (it *InTransport) verifyPeerCertificate(serverName string, rawCerts [][]byt
 	var verifiedChains [][]*x509.Certificate
 	verifiedChains, err = it.verifyChains(serverName, PeerCertificates)
 	if err != nil {
-		return fmt.Errorf("intransport validation error: %w", err)
+		return fmt.Errorf("intransport: validation error: %w", err)
 	}
 	if it.NextVerifyPeerCertificate != nil {
 		err = it.NextVerifyPeerCertificate(rawCerts, verifiedChains)
