@@ -40,7 +40,6 @@ var (
 	MustStapleValue = []byte{0x30, 0x03, 0x02, 0x01, 0x05}
 
 	// MustStapleOID is the OID of the must staple.
-	//
 	// Must staple oid is id-pe-tlsfeature  as defined here
 	// https://tools.ietf.org/html/rfc7633#section-6
 	MustStapleOID = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 1, 24}
@@ -297,6 +296,11 @@ func parseHost(host string) (string, error) {
 	return host, nil
 }
 
+// NoCertificatesErr - this is returned in the unlikely event that no
+// peer certificates are provided whatsoever.  This should never be
+// seen.
+var NoCertificatesErr = errors.New("no certificates supplied")
+
 // verifyPeerCertificate - The difference between this
 // and the default TLS verification is that missing intermediates will be
 // fetched until either a valid path to a trusted root is found or no further
@@ -306,14 +310,14 @@ func parseHost(host string) (string, error) {
 // method returns an error, it will stop the connection.
 func (it *InTransport) verifyPeerCertificate(serverName string, rawCerts [][]byte, _ [][]*x509.Certificate) error {
 	if len(rawCerts) == 0 {
-		return fmt.Errorf("no certificates supplied")
+		return NoCertificatesErr
 	}
 
 	PeerCertificates := make([]*x509.Certificate, 0, len(rawCerts))
 	for _, raw := range rawCerts {
 		cert, err := x509.ParseCertificate(raw)
 		if err != nil {
-			return err
+			return fmt.Errorf("intransport: error parsing certificate: %w", err)
 		}
 		PeerCertificates = append(PeerCertificates, cert)
 	}
@@ -322,16 +326,19 @@ func (it *InTransport) verifyPeerCertificate(serverName string, rawCerts [][]byt
 	var verifiedChains [][]*x509.Certificate
 	verifiedChains, err = it.verifyChains(serverName, PeerCertificates)
 	if err != nil {
-		return err
+		return fmt.Errorf("intransport validation error: %w", err)
 	}
 	if it.NextVerifyPeerCertificate != nil {
 		err = it.NextVerifyPeerCertificate(rawCerts, verifiedChains)
+		if err != nil {
+			err = fmt.Errorf("intransport: NextVerifyPeerCertificate() failed: %w", err)
+		}
 	}
 
 	return err
 }
 
-// verifyChains - this takes cert(s) and does it's best to find a path to a recognized root,
+// verifyChains - this takes cert(s) and does its best to find a path to a recognized root,
 // fetching intermediate certs that may be missing.
 func (it *InTransport) verifyChains(serverName string, certs []*x509.Certificate) (chains [][]*x509.Certificate, err error) {
 	cp := x509.NewCertPool()
@@ -341,7 +348,8 @@ func (it *InTransport) verifyChains(serverName string, certs []*x509.Certificate
 		}
 	}
 
-	// Validate hostname first, because chains are comparatively expensive
+	// Validate hostname first, because chains are comparatively expensive.  Also the Verify
+	// below won't fail on an empty serverName unless we explicitly check it here.
 	if err := certs[0].VerifyHostname(serverName); err != nil {
 		return nil, err
 	}
@@ -355,13 +363,13 @@ func (it *InTransport) verifyChains(serverName string, certs []*x509.Certificate
 
 	if err != nil {
 		// This will be a chain failure.  Try to fetch intermediates now.
-		var dledIntermediates []*x509.Certificate
+		var fetched []*x509.Certificate
 
-		dledIntermediates, err = it.buildMissingChain(certs[len(certs)-1])
+		fetched, err = it.buildMissingChain(certs[len(certs)-1])
 		if err != nil {
-			return nil, fmt.Errorf("failed to find chain: %s", err)
+			return nil, fmt.Errorf("failed to find chain: %w", err)
 		}
-		for _, cert := range dledIntermediates {
+		for _, cert := range fetched {
 			cp.AddCert(cert)
 		}
 		chains, err = certs[0].Verify(x509.VerifyOptions{
@@ -409,7 +417,7 @@ func fetchIssuingCert(cert *x509.Certificate) (*x509.Certificate, error) {
 	// 1) avoid stampede problem - minimizes fetches of a cert on cache miss
 	// 2) avoid long locks on the outer map.
 	if len(cert.IssuingCertificateURL) == 0 {
-		return nil, fmt.Errorf("failed to fetch intermediates for %s",
+		return nil, fmt.Errorf("cert has empty IssuingCertificateURL: %s",
 			cert.Subject.CommonName)
 	}
 
@@ -469,7 +477,7 @@ func fetchIssuingCert(cert *x509.Certificate) (*x509.Certificate, error) {
 		break
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to fetch issuing certificate: %w", err)
 	}
 	return fetchedCert, nil
 }

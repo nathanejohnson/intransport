@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -386,6 +387,11 @@ func TestHostNameValidation(t *testing.T) {
 		_ = resp.Body.Close()
 	} else {
 		t.Logf("expected failure for badURL: %s", err)
+		var hErr x509.HostnameError
+		if !errors.As(err, &hErr) {
+			t.Log("error was not HostNameError")
+			t.Fail()
+		}
 	}
 
 }
