@@ -1,7 +1,6 @@
 #!/bin/bash
 set -ex
 
-
 SRCDIR=/root
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
@@ -11,9 +10,7 @@ cd $DIR
 docker=$(which docker)
 
 LABEL="intransport_test"
-${docker} rm -f ${LABEL} || true
 ${docker} rmi ${LABEL} || true
-
 
 args=(build --label ${LABEL} -t ${LABEL})
 
@@ -24,4 +21,6 @@ done
 ## butt wait, there's more!
 args+=( . )
 
-exec "$docker" "${args[@]}"
+eval "$docker" "${args[@]}"
+
+${docker} rmi ${LABEL}

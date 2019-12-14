@@ -1,4 +1,4 @@
-dist: trusty
+dist: bioinic
 sudo: false
 language: go
 
@@ -25,9 +25,6 @@ addons:
     - vulnerability.org
 
 env:
-
-services:
-  - docker
 
 script:
   - go test -v

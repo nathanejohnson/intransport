@@ -409,7 +409,6 @@ func TestExpectedOCSPFailures(t *testing.T) {
 	issuer := intermediateServers[intermediateCNs[0]]
 
 	trans := NewInTransport(&tls.Config{RootCAs: rootPool})
-
 	// Force connection to re-establish after every test.
 	trans.Transport.DisableKeepAlives = true
 	c := &http.Client{Transport: trans}
