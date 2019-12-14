@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -ex
 
 
 SRCDIR=/root
@@ -9,17 +9,21 @@ hosts=$(cat ${DIR}/_testdata/insecurities.txt)
 
 cd $DIR
 
-GODEBUG=netdns=cgo go test -c -o intransporttest
+LABEL="intransport_test"
+docker rm -f ${LABEL} || true
+docker rmi ${LABEL} || true
 
 docker=$(which docker)
 
-args=(run -t -v "${DIR}":"${SRCDIR}" -w "${SRCDIR}")
+args=(build --label ${LABEL} -t ${LABEL})
 
 for host in $hosts; do
 	args+=(--add-host ${host}:127.0.0.1)
 done
 
-args+=(ubuntu:trusty /bin/bash -c "${SRCDIR}/intransporttest")
+## butt wait, there's more!
+args+=( . )
 
 exec "$docker" "${args[@]}"
-#echo "${args[@]}"
+
+docker run ${LABEL}
