@@ -70,9 +70,9 @@ var (
 	}
 )
 
-// PeerCertVerifier - this is a method type that is plugged into a tls.Config.VerifyPeerCertificate,
+// peerCertViewer - this is a method type that is plugged into a tls.Config.VerifyPeerCertificate,
 // or into our NextVerifyPeerCertificate.
-type PeerCertVerifier func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
+type peerCertViewer func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error
 
 // NewInTransportHTTPClient - generate an http client with sensible defaults.
 // Optionally pass a *tls.Config that will be used as a basis for tls configuration.
@@ -158,7 +158,7 @@ type inTranspoort struct {
 	// This method will be called after a successful inTranspoort verification,
 	// and verifiedChains will contain appropriate data including any intermediates
 	// that needed to be downloaded.
-	NextVerifyPeerCertificate PeerCertVerifier
+	NextVerifyPeerCertificate peerCertViewer
 
 	TLS                 *tls.Config
 	TLSHandshakeTimeout time.Duration
