@@ -29,14 +29,14 @@ type certCache struct {
 	c *http.Client
 }
 
-// TODO - look into status_request_v2
-const statusRequestExtension = 5
+// StatusRequestExtension - status_request
+const StatusRequestExtension = 5
 
 var (
 	// MustStapleValue is the value in the MustStaple extension.
 	// DER encoding of []int{5}.
 	// https://tools.ietf.org/html/rfc6066#section-1.1
-	MustStapleValue, _ = asn1.Marshal([]int{statusRequestExtension})
+	MustStapleValue, _ = asn1.Marshal([]int{StatusRequestExtension})
 
 	// MustStapleOID is the OID of the must staple.
 	// Must staple oid is id-pe-tlsfeature  as defined here
@@ -237,7 +237,7 @@ func (it *inTranspoort) validateOCSP(serverName string, connState *tls.Connectio
 					return fmt.Errorf("malformed must staple extension: %w", err)
 				}
 				for _, tlsExt := range tlsExts {
-					if tlsExt == statusRequestExtension {
+					if tlsExt == StatusRequestExtension {
 						mustStaple = true
 						break
 					}

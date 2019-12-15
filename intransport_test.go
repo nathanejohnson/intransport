@@ -586,7 +586,7 @@ func signCSR(
 	extVal := MustStapleValue
 
 	if multiMustStaple {
-		extVal, _ = asn1.Marshal([]int{2, 3, 4, statusRequestExtension})
+		extVal, _ = asn1.Marshal([]int{2, 3, 4, StatusRequestExtension})
 	}
 	crtTmpl := &x509.Certificate{
 		Signature:             csr.Signature,
