@@ -305,12 +305,19 @@ func TestMain(m *testing.M) {
 func TestMissingIntermediates(t *testing.T) {
 
 	wg := &sync.WaitGroup{}
-	trans := NewInTransport(&tls.Config{RootCAs: rootPool})
-	trans.Transport.DisableKeepAlives = true
-	trans.Transport.MaxIdleConnsPerHost = -1
-	c := &http.Client{Transport: trans}
+	tr := &http.Transport{
+		DisableKeepAlives:   true,
+		MaxIdleConnsPerHost: -1,
+	}
+	d := &net.Dialer{
+		Timeout:   time.Second * 5,
+		KeepAlive: 0,
+	}
+	tlsc := &tls.Config{
+		RootCAs: rootPool,
+	}
 	if logChains {
-		trans.NextVerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+		tlsc.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 			for i, chain := range verifiedChains {
 				for j, cert := range chain {
 					t.Logf("chain %d cert %d: CN: %s Issuer CN : %s",
@@ -323,6 +330,10 @@ func TestMissingIntermediates(t *testing.T) {
 			return nil
 		}
 	}
+	trans := NewInTransportFromTransport(tr, d, tlsc)
+
+	c := &http.Client{Transport: trans}
+
 	for hname, s := range hostServers {
 		surl, _ := url.Parse(s.URL)
 		port := surl.Port()
@@ -407,10 +418,33 @@ func TestExpectedOCSPFailures(t *testing.T) {
 	}
 
 	issuer := intermediateServers[intermediateCNs[0]]
-
-	trans := NewInTransport(&tls.Config{RootCAs: rootPool})
+	tr := &http.Transport{
+		DisableKeepAlives:   true,
+		MaxIdleConnsPerHost: -1,
+	}
+	d := &net.Dialer{
+		Timeout:   time.Second * 5,
+		KeepAlive: 0,
+	}
+	tlsc := &tls.Config{
+		RootCAs: rootPool,
+	}
+	if logChains {
+		tlsc.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+			for i, chain := range verifiedChains {
+				for j, cert := range chain {
+					t.Logf("chain %d cert %d: CN: %s Issuer CN : %s",
+						i,
+						j,
+						cert.Subject.CommonName, cert.Issuer.CommonName,
+					)
+				}
+			}
+			return nil
+		}
+	}
+	trans := NewInTransportFromTransport(tr, d, tlsc)
 	// Force connection to re-establish after every test.
-	trans.Transport.DisableKeepAlives = true
 	c := &http.Client{Transport: trans}
 
 	type failFunc func(resp *ocsp.Response) (outResp []byte, expectSuccess bool)

@@ -34,9 +34,9 @@ const statusRequestExtension = 5
 
 var (
 	// MustStapleValue is the value in the MustStaple extension.
-	// DER encoding of the status_request extension, 5.
+	// DER encoding of []int{5}.
 	// https://tools.ietf.org/html/rfc6066#section-1.1
-	MustStapleValue = []byte{0x30, 0x03, 0x02, 0x01, 0x05}
+	MustStapleValue, _ = asn1.Marshal([]int{statusRequestExtension})
 
 	// MustStapleOID is the OID of the must staple.
 	// Must staple oid is id-pe-tlsfeature  as defined here
@@ -83,40 +83,54 @@ func NewInTransportHTTPClient(tlsc *tls.Config) *http.Client {
 }
 
 // NewInTransport - create a new http transport suitable for client connections.
-// InTransport implements http.RoundTripper, and can be used like so:
+// inTranspoort implements http.RoundTripper, and can be used like so:
 //
 //    it := intransport.NewInTranport(nil)
 //    c := &http.Client{
 //        Transport: it,
 //    }
-func NewInTransport(tlsc *tls.Config) *InTransport {
-	d := &net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}
-	return NewInTransportFromDialer(d, tlsc)
+func NewInTransport(tlsc *tls.Config) http.RoundTripper {
+	return NewInTransportFromTransport(nil, nil, tlsc)
 }
 
-// NewInTransportFromDialer - this allows you to pass in an net.Dialer
-// with pre-configured timeouts.  This is useful where you want to customize.
-// Further customization is possible by tweaking the InTransport.Transport
-func NewInTransportFromDialer(dialer *net.Dialer, tlsc *tls.Config) *InTransport {
-	t := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		DialContext:           dialer.DialContext,
-		TLSClientConfig:       tlsc,
+// NewInTransportFromTransport - use t, dialer and tlsc as templates.  Any can be nil and sane defaults
+// will be used.  If tlsc.VerifyPeerCertificate is specified, it will be called with the same semantics
+// as before, but after we fetch intermediates and validate chains (if necessary).
+func NewInTransportFromTransport(t *http.Transport, dialer *net.Dialer, tlsc *tls.Config) http.RoundTripper {
+	if dialer == nil {
+		dialer = &net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}
 	}
-	it := &InTransport{
+	if t == nil {
+		t = &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           dialer.DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+	} else {
+		t = t.Clone()
+		if t.DialContext == nil {
+			t.DialContext = dialer.DialContext
+		}
+	}
+	if tlsc == nil {
+		tlsc = new(tls.Config)
+	} else {
+		tlsc = tlsc.Clone()
+	}
+	it := &inTranspoort{
 		Transport:                 t,
 		NextVerifyPeerCertificate: tlsc.VerifyPeerCertificate,
 		Dialer:                    dialer,
 	}
 
-	it.TLS = tlsc.Clone()
+	it.TLS = tlsc
 	t.DialTLS = func(network, addr string) (net.Conn, error) {
 		h, _, err := net.SplitHostPort(addr)
 		if err != nil {
@@ -134,14 +148,14 @@ func NewInTransportFromDialer(dialer *net.Dialer, tlsc *tls.Config) *InTransport
 	return it
 }
 
-// InTransport - this implements an http.RoundTripper and handles the fetching
+// inTranspoort - this implements an http.RoundTripper and handles the fetching
 // of missing intermediate certificates, and verifying OCSP stapling, and
 // in the event there is a "must staple" set on the certificate it will fail on
 // missing staple.
-type InTransport struct {
+type inTranspoort struct {
 	// Specify this method in the situation where you might otherwise have wanted to
 	// install your own VerifyPeerCertificate hook into tls.Config.  If specified,
-	// This method will be called after a successful InTransport verification,
+	// This method will be called after a successful inTranspoort verification,
 	// and verifiedChains will contain appropriate data including any intermediates
 	// that needed to be downloaded.
 	NextVerifyPeerCertificate PeerCertVerifier
@@ -155,12 +169,14 @@ type InTransport struct {
 
 // RoundTrip - this implements the http.RoundTripper interface, and makes it suitable
 // for use as a transport.
-func (it *InTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (it *inTranspoort) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := it.Transport.RoundTrip(req)
 	if err != nil {
 		return resp, err
 	}
 
+	// Unfortunately VerifyPeerCertificates is called early in the handshake, too early
+	// to fetch the ocsp from the response.  We have to do it here instead.
 	if resp.TLS != nil {
 		host, _ := parseHost(req.Host)
 		err = it.validateOCSP(host, resp.TLS)
@@ -168,29 +184,20 @@ func (it *InTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if err != nil {
 			err = fmt.Errorf("intransport: error handling OCSP response: %w", err)
 			// Closing the body without reading from it should signal closing the
-			// underlying net.Conn in the case of keepalives enabled, which we
-			// have on by default.
+			// underlying net.Conn in the case of pooling enabled, which we
+			// have on by default.  We don't want this connection being released
+			// back to the pool.
 			_ = resp.Body.Close()
 			return nil, err
 		}
-
 	} else if resp.Request.URL.Scheme == "https" {
+		// Don't think we'll ever get here?
 		err := fmt.Errorf("intransport: https requested, but tls is nil")
 		_ = resp.Body.Close()
 		return nil, err
 	}
 
 	return resp, nil
-
-}
-
-// SetNextVerifyPeerCertificate - this is a setter method to specify a method
-// to be called after a successful InTransport TLS validation.
-// Specify this method in the situation where you might otherwise have wanted to
-// install your own VerifyPeerCertificate hook into tls.Config.  verifiedChains will
-// contain appropriate data including any intermediates that needed to be downloaded.
-func (it *InTransport) SetNextVerifyPeerCertificate(verifier PeerCertVerifier) {
-	it.NextVerifyPeerCertificate = verifier
 }
 
 // ErrNoPeerCerts - this is returned when there are no peer certs presented.
@@ -207,7 +214,7 @@ var ErrInvalidChainLength = errors.New("invalid chain length")
 // OCSP staple was not found.
 var ErrOCSPNotStapled = errors.New("certificate was marked with OCSP must-staple and no staple could be verified")
 
-func (it *InTransport) validateOCSP(serverName string, connState *tls.ConnectionState) error {
+func (it *inTranspoort) validateOCSP(serverName string, connState *tls.ConnectionState) error {
 	peers := connState.PeerCertificates
 	if len(peers) == 0 {
 		return ErrNoPeerCerts
@@ -310,7 +317,7 @@ var NoCertificatesErr = errors.New("no certificates supplied")
 // connection will fail .  If a chain can be established, then the optional
 // NextVerifyPeerCertificate() method will be called, if specified.  If this
 // method returns an error, it will stop the connection.
-func (it *InTransport) verifyPeerCertificate(serverName string, rawCerts [][]byte, _ [][]*x509.Certificate) error {
+func (it *inTranspoort) verifyPeerCertificate(serverName string, rawCerts [][]byte, _ [][]*x509.Certificate) error {
 	if len(rawCerts) == 0 {
 		return NoCertificatesErr
 	}
@@ -342,7 +349,7 @@ func (it *InTransport) verifyPeerCertificate(serverName string, rawCerts [][]byt
 
 // verifyChains - this takes cert(s) and does its best to find a path to a recognized root,
 // fetching intermediate certs that may be missing.
-func (it *InTransport) verifyChains(serverName string, certs []*x509.Certificate) (chains [][]*x509.Certificate, err error) {
+func (it *inTranspoort) verifyChains(serverName string, certs []*x509.Certificate) (chains [][]*x509.Certificate, err error) {
 	cp := x509.NewCertPool()
 	if len(certs) > 1 {
 		for _, cert := range certs[1:] {
@@ -387,7 +394,7 @@ func (it *InTransport) verifyChains(serverName string, certs []*x509.Certificate
 }
 
 // This attempts to build the missing links of the chain, and returns any intermediates it may have fetched.
-func (it *InTransport) buildMissingChain(cert *x509.Certificate) ([]*x509.Certificate, error) {
+func (it *inTranspoort) buildMissingChain(cert *x509.Certificate) ([]*x509.Certificate, error) {
 	tmpCert := cert
 	var retval []*x509.Certificate
 	var lastError error
