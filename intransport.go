@@ -149,19 +149,11 @@ func NewInTransportFromTransport(t *http.Transport, dialer *net.Dialer, tlsc *tl
 			return it.validateOCSP(h, &state)
 		}
 
-		// Unfortunately there is no tls dialer that supports contexts for now,
-		// so have to manually dial and then handshake.
-		rawConn, err := it.Dialer.DialContext(ctx, network, addr)
-		if err != nil {
-			return nil, err
+		d := tls.Dialer{
+			NetDialer: it.Dialer,
+			Config:    conf,
 		}
-		conn := tls.Client(rawConn, conf)
-		err = conn.Handshake()
-		if err != nil {
-			_ = rawConn.Close()
-			return nil, err
-		}
-		return conn, nil
+		return d.DialContext(ctx, network, addr)
 	}
 	return it
 }
