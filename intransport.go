@@ -44,7 +44,7 @@ var (
 	// ErrInvalidChainsLength - this is returned when the chains length is less than 1
 	ErrInvalidChainsLength = errors.New("invalid chains length")
 
-	// ErrOCSPNotStapled - this iss returned when the OCSP Must Staple extension is present but a valid
+	// ErrOCSPNotStapled - this is returned when the OCSP Must Staple extension is present but a valid
 	// OCSP staple was not found.
 	ErrOCSPNotStapled = errors.New("certificate was marked with OCSP must-staple and no staple could be verified")
 
