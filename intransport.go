@@ -2,6 +2,7 @@ package intransport
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/asn1"
@@ -52,7 +53,6 @@ var (
 				DialContext: (&net.Dialer{
 					Timeout:   3 * time.Second,
 					KeepAlive: 0,
-					DualStack: true,
 				}).DialContext,
 
 				// Since we cache responses, all http activity should be
@@ -131,7 +131,7 @@ func NewInTransportFromTransport(t *http.Transport, dialer *net.Dialer, tlsc *tl
 	}
 
 	it.TLS = tlsc
-	t.DialTLS = func(network, addr string) (net.Conn, error) {
+	t.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		h, _, err := net.SplitHostPort(addr)
 		if err != nil {
 			return nil, err
@@ -143,16 +143,37 @@ func NewInTransportFromTransport(t *http.Transport, dialer *net.Dialer, tlsc *tl
 		conf.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 			return it.verifyPeerCertificate(h, rawCerts, verifiedChains)
 		}
-		return tls.DialWithDialer(it.Dialer, network, addr, conf)
+
+		// As of go 1.15, we can now validate OCSP during handshake.
+		conf.VerifyConnection = func(state tls.ConnectionState) error {
+			return it.validateOCSP(h, &state)
+		}
+
+		// Unfortunately there is no tls dialer that supports contexts for now,
+		// so have to manually dial and then handshake.
+		rawConn, err := it.Dialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		conn := tls.Client(rawConn, conf)
+		err = conn.Handshake()
+		if err != nil {
+			_ = rawConn.Close()
+			return nil, err
+		}
+		return conn, nil
 	}
 	return it
 }
+
+
 
 // inTranspoort - this implements an http.RoundTripper and handles the fetching
 // of missing intermediate certificates, and verifying OCSP stapling, and
 // in the event there is a "must staple" set on the certificate it will fail on
 // missing staple.
 type inTranspoort struct {
+	*http.Transport
 	// Specify this method in the situation where you might otherwise have wanted to
 	// install your own VerifyPeerCertificate hook into tls.Config.  If specified,
 	// This method will be called after a successful inTranspoort verification,
@@ -163,42 +184,10 @@ type inTranspoort struct {
 	TLS                 *tls.Config
 	TLSHandshakeTimeout time.Duration
 
-	Transport *http.Transport
 	Dialer    *net.Dialer
 }
 
-// RoundTrip - this implements the http.RoundTripper interface, and makes it suitable
-// for use as a transport.
-func (it *inTranspoort) RoundTrip(req *http.Request) (*http.Response, error) {
-	resp, err := it.Transport.RoundTrip(req)
-	if err != nil {
-		return resp, err
-	}
 
-	// Unfortunately VerifyPeerCertificates is called early in the handshake, too early
-	// to fetch the ocsp from the response.  We have to do it here instead.
-	if resp.TLS != nil {
-		host, _ := parseHost(req.Host)
-		err = it.validateOCSP(host, resp.TLS)
-
-		if err != nil {
-			err = fmt.Errorf("intransport: error handling OCSP response: %w", err)
-			// Closing the body without reading from it should signal closing the
-			// underlying net.Conn in the case of pooling enabled, which we
-			// have on by default.  We don't want this connection being released
-			// back to the pool.
-			_ = resp.Body.Close()
-			return nil, err
-		}
-	} else if resp.Request.URL.Scheme == "https" {
-		// Don't think we'll ever get here?
-		err := fmt.Errorf("intransport: https requested, but tls is nil")
-		_ = resp.Body.Close()
-		return nil, err
-	}
-
-	return resp, nil
-}
 
 // ErrNoPeerCerts - this is returned when there are no peer certs presented.
 var ErrNoPeerCerts = errors.New("no peer certificates presented")

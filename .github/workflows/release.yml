@@ -1,0 +1,25 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Get the version
+        id: get_version
+        run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
+      - name: Setup golang 1.18
+        uses: actions/setup-go@v2
+        with:
+          go-version: '1.18'
+      - name: Add hosts
+        run: cat ${GITHUB_WORKSPACE}/hosts | sudo tee -a /etc/hosts
+      - name: Test
+        run: go test
+
