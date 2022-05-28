@@ -291,7 +291,6 @@ func TestMain(m *testing.M) {
 				},
 			}
 
-			tlsc.BuildNameToCertificate()
 			s.TLS = tlsc
 			s.StartTLS()
 			hostServers[hcn] = s
