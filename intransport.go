@@ -166,8 +166,6 @@ func NewInTransportFromTransport(t *http.Transport, dialer *net.Dialer, tlsc *tl
 	return it
 }
 
-
-
 // inTranspoort - this implements an http.RoundTripper and handles the fetching
 // of missing intermediate certificates, and verifying OCSP stapling, and
 // in the event there is a "must staple" set on the certificate it will fail on
@@ -184,10 +182,8 @@ type inTranspoort struct {
 	TLS                 *tls.Config
 	TLSHandshakeTimeout time.Duration
 
-	Dialer    *net.Dialer
+	Dialer *net.Dialer
 }
-
-
 
 // ErrNoPeerCerts - this is returned when there are no peer certs presented.
 var ErrNoPeerCerts = errors.New("no peer certificates presented")
@@ -432,8 +428,9 @@ func fetchIssuingCert(cert *x509.Certificate) (*x509.Certificate, error) {
 		cc.Unlock()
 		cce.Lock()
 		crt := cce.cert
-		// crt may be nil if fetch failed on a prior attempt
-		if crt != nil {
+		// crt may be nil if fetch failed on a prior attempt.
+		// also re-fetch if cert is expired.
+		if crt != nil && crt.NotAfter.After(time.Now()) {
 			cce.Unlock()
 			return crt, nil
 		}
