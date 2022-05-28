@@ -95,7 +95,9 @@ func NewInTransport(tlsc *tls.Config) http.RoundTripper {
 
 // NewInTransportFromTransport - use t, dialer and tlsc as templates.  Any can be nil and sane defaults
 // will be used.  If tlsc.VerifyPeerCertificate is specified, it will be called with the same semantics
-// as before, but after we fetch intermediates and validate chains (if necessary).
+// as before, but after we fetch intermediates and validate chains (if necessary).  Similarly, if
+// tlsc.VerifyConnection is specified, it will be called with the same semantics as before,
+// but after we validate stapled ocsp.
 func NewInTransportFromTransport(t *http.Transport, dialer *net.Dialer, tlsc *tls.Config) http.RoundTripper {
 	if dialer == nil {
 		dialer = &net.Dialer{
@@ -146,7 +148,14 @@ func NewInTransportFromTransport(t *http.Transport, dialer *net.Dialer, tlsc *tl
 
 		// As of go 1.15, we can now validate OCSP during handshake.
 		conf.VerifyConnection = func(state tls.ConnectionState) error {
-			return it.validateOCSP(h, &state)
+			err := it.validateOCSP(h, &state)
+			if err != nil {
+				return err
+			}
+			if it.NextVerifyConnection != nil {
+				return it.NextVerifyConnection(state)
+			}
+			return nil
 		}
 
 		d := tls.Dialer{
@@ -170,6 +179,9 @@ type inTranspoort struct {
 	// and verifiedChains will contain appropriate data including any intermediates
 	// that needed to be downloaded.
 	NextVerifyPeerCertificate peerCertViewer
+
+	// NextVerifyConnection is similar to NextVerityPeerCertificate, but for the VerifyConnection instead.
+	NextVerifyConnection func(cs tls.ConnectionState) error
 
 	TLS                 *tls.Config
 	TLSHandshakeTimeout time.Duration
