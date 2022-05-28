@@ -1,4 +1,4 @@
-[![GoDoc](https://godoc.org/github.com/nathanejohnson/intransport?status.svg)](https://godoc.org/github.com/nathanejohnson/intransport)
+[![GoDoc](https://pkg.go.dev/)](https://godoc.org/github.com/nathanejohnson/intransport/v2)
 [![Go Report Card](https://goreportcard.com/badge/github.com/nathanejohnson/intransport)](https://goreportcard.com/report/github.com/nathanejohnson/intransport)
 [![Build Status](https://github.com//nathanejohnson/intransport/actions/workflows/build.yml/badge.svg)](https://github.com//nathanejohnson/intransport/actions/workflows/build.yml)
 
