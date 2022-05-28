@@ -329,7 +329,7 @@ func TestMissingIntermediates(t *testing.T) {
 			return nil
 		}
 	}
-	trans := NewInTransportFromTransport(tr, d, tlsc)
+	trans := NewInTransportFromTransportWithCache(tr, d, tlsc, NewMapCache())
 
 	c := &http.Client{Transport: trans}
 
