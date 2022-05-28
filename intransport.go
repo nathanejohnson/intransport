@@ -34,6 +34,20 @@ type certCache struct {
 const StatusRequestExtension = 5
 
 var (
+	// ErrNoPeerCerts - this is returned when there are no peer certs presented.
+	ErrNoPeerCerts = errors.New("no peer certificates presented")
+
+	// ErrInvalidChainsLength - this is returned when the chains length is less than 1
+	ErrInvalidChainsLength = errors.New("invalid chains length")
+
+	// ErrInvalidChainLength - this is returned when the chain length is less than 2 for a "chains" entry,
+	// IOW there must be at leat one peer cert in addition to the leaf.
+	ErrInvalidChainLength = errors.New("invalid chain length")
+
+	// ErrOCSPNotStapled - this iss returned when the OCSP Must Staple extension is present but a valid
+	// OCSP staple was not found.
+	ErrOCSPNotStapled = errors.New("certificate was marked with OCSP must-staple and no staple could be verified")
+
 	// MustStapleValue is the value in the MustStaple extension.
 	// DER encoding of []int{5}.
 	// https://tools.ietf.org/html/rfc6066#section-1.1
@@ -188,20 +202,6 @@ type inTranspoort struct {
 
 	Dialer *net.Dialer
 }
-
-// ErrNoPeerCerts - this is returned when there are no peer certs presented.
-var ErrNoPeerCerts = errors.New("no peer certificates presented")
-
-// ErrInvalidChainsLength - this is returned when the chains length is less than 1
-var ErrInvalidChainsLength = errors.New("invalid chains length")
-
-// ErrInvalidChainLength - this is returned when the chain length is less than 2 for a "chains" entry,
-// IOW there must be at leat one peer cert in addition to the leaf.
-var ErrInvalidChainLength = errors.New("invalid chain length")
-
-// ErrOCSPNotStapled - this iss returned when the OCSP Must Staple extension is present but a valid
-// OCSP staple was not found.
-var ErrOCSPNotStapled = errors.New("certificate was marked with OCSP must-staple and no staple could be verified")
 
 func (it *inTranspoort) validateOCSP(serverName string, connState *tls.ConnectionState) error {
 	peers := connState.PeerCertificates
