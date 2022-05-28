@@ -37,9 +37,6 @@ var (
 	// ErrNoPeerCerts - this is returned when there are no peer certs presented.
 	ErrNoPeerCerts = errors.New("no peer certificates presented")
 
-	// ErrInvalidChainsLength - this is returned when the chains length is less than 1
-	ErrInvalidChainsLength = errors.New("invalid chains length")
-
 	// ErrInvalidChainLength - this is returned when the chain length is less than 2 for a "chains" entry,
 	// IOW there must be at leat one peer cert in addition to the leaf.
 	ErrInvalidChainLength = errors.New("invalid chain length")
