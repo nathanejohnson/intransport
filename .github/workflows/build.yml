@@ -12,10 +12,12 @@ jobs:
       - name: Get the version
         id: get_version
         run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
-      - name: Setup golang 1.18
+      - name: Setup golang 1.19
         uses: actions/setup-go@v2
         with:
-          go-version: '1.18'
+          go-version: '1.19'
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v3
       - name: Add hosts
         run: cat ${GITHUB_WORKSPACE}/hosts | sudo tee -a /etc/hosts
       - name: Test

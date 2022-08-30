@@ -37,7 +37,7 @@ type intMeta struct {
 	caIssuerURL string
 }
 
-func (im *intMeta) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (im *intMeta) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/x-x509-ca-cert")
 	w.WriteHeader(http.StatusOK)
 	buf := bytes.NewReader(im.cert.Raw)

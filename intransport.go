@@ -12,7 +12,6 @@ import (
 	"io/ioutil"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"golang.org/x/crypto/ocsp"
@@ -65,13 +64,13 @@ func NewInTransportHTTPClient(tlsc *tls.Config) *http.Client {
 }
 
 // NewInTransport - create a new http transport suitable for client connections.
-// inTranspoort implements http.RoundTripper, and can be used like so:
+// InTransport implements http.RoundTripper, and can be used like so:
 //
-//    it := intransport.NewInTranport(nil)
-//    c := &http.Client{
-//        Transport: it,
-//    }
-func NewInTransport(tlsc *tls.Config) http.RoundTripper {
+//	it := intransport.NewInTranport(nil)
+//	c := &http.Client{
+//	    Transport: it,
+//	}
+func NewInTransport(tlsc *tls.Config) *InTransport {
 	return NewInTransportFromTransport(nil, nil, tlsc)
 }
 
@@ -80,13 +79,13 @@ func NewInTransport(tlsc *tls.Config) http.RoundTripper {
 // as before, but after we fetch intermediates and validate chains (if necessary).  Similarly, if
 // tlsc.VerifyConnection is specified, it will be called with the same semantics as before,
 // but after we validate stapled ocsp.
-func NewInTransportFromTransport(t *http.Transport, dialer *net.Dialer, tlsc *tls.Config) http.RoundTripper {
+func NewInTransportFromTransport(t *http.Transport, dialer *net.Dialer, tlsc *tls.Config) *InTransport {
 	return NewInTransportFromTransportWithCache(t, dialer, tlsc, nil)
 }
 
 // NewInTransportFromTransportWithCache - Same as NewInTransportFromTransport, with the option of specifying
 // a cache implementation for fetched intermediates.  If nil, the default cacher will use the map cache implementation.
-func NewInTransportFromTransportWithCache(t *http.Transport, dialer *net.Dialer, tlsc *tls.Config, cache Cacher) http.RoundTripper {
+func NewInTransportFromTransportWithCache(t *http.Transport, dialer *net.Dialer, tlsc *tls.Config, cache Cacher) *InTransport {
 	if dialer == nil {
 		dialer = &net.Dialer{
 			Timeout:   30 * time.Second,
@@ -117,11 +116,12 @@ func NewInTransportFromTransportWithCache(t *http.Transport, dialer *net.Dialer,
 	if cache == nil {
 		cache = NewMapCache()
 	}
-	it := &inTranspoort{
-		Transport:                 t,
+	it := &InTransport{
+		t:                         t,
 		NextVerifyPeerCertificate: tlsc.VerifyPeerCertificate,
-		Dialer:                    dialer,
-		certFetcher: &http.Client{
+		NextVerifyConnection:      tlsc.VerifyConnection,
+		dialer:                    dialer,
+		IntermediateHTTPClient: &http.Client{
 			Transport: &http.Transport{
 				Proxy: http.ProxyFromEnvironment,
 				DialContext: (&net.Dialer{
@@ -134,7 +134,7 @@ func NewInTransportFromTransportWithCache(t *http.Transport, dialer *net.Dialer,
 				DisableKeepAlives: true,
 
 				// This shouldn't be needed, since I don't believe
-				// the server url locations are ever TLS enabled?
+				// the server url locations are ever tlsc enabled?
 				TLSHandshakeTimeout: 3 * time.Second,
 
 				// This also shouldn't be needed, but doesn't hurt anything
@@ -144,13 +144,13 @@ func NewInTransportFromTransportWithCache(t *http.Transport, dialer *net.Dialer,
 		cache: cache,
 	}
 
-	it.TLS = tlsc
+	it.tlsc = tlsc
 	t.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		h, _, err := net.SplitHostPort(addr)
 		if err != nil {
 			return nil, err
 		}
-		conf := it.TLS.Clone()
+		conf := it.tlsc.Clone()
 		// Must configure InsecureSkipVerify to ensure that VerifyPeerCertificate
 		// is always called, which allows us to fetch missing intermediates.
 		conf.InsecureSkipVerify = true
@@ -171,7 +171,7 @@ func NewInTransportFromTransportWithCache(t *http.Transport, dialer *net.Dialer,
 		}
 
 		d := tls.Dialer{
-			NetDialer: it.Dialer,
+			NetDialer: it.dialer,
 			Config:    conf,
 		}
 		return d.DialContext(ctx, network, addr)
@@ -180,33 +180,43 @@ func NewInTransportFromTransportWithCache(t *http.Transport, dialer *net.Dialer,
 
 }
 
-// inTranspoort - this implements an http.RoundTripper and handles the fetching
+// InTransport - this implements an http.RoundTripper and handles the fetching
 // of missing intermediate certificates, and verifying OCSP stapling, and
 // in the event there is a "must staple" set on the certificate it will fail on
 // missing staple.
-type inTranspoort struct {
-	*http.Transport
+type InTransport struct {
 	// Specify this method in the situation where you might otherwise have wanted to
 	// install your own VerifyPeerCertificate hook into tls.Config.  If specified,
-	// This method will be called after a successful inTranspoort verification,
+	// This method will be called after a successful InTransport verification,
 	// and verifiedChains will contain appropriate data including any intermediates
-	// that needed to be downloaded.
+	// that needed to be downloaded.  This is also set when a VerifyPeerCertificate
+	// method is present on the passed tls.Config to one of the New methods above.
 	NextVerifyPeerCertificate peerCertViewer
 
 	// NextVerifyConnection is similar to NextVerityPeerCertificate, but for the VerifyConnection instead.
+	// Similarly to above, this is automatically set if VerifyConnection is set on
+	// tls.Config passed to any of the New methods above.
 	NextVerifyConnection func(cs tls.ConnectionState) error
 
-	TLS                 *tls.Config
-	TLSHandshakeTimeout time.Duration
+	// IntermediateHTTPClient is an http client used for fetching intermediate certs
+	// that are missing.  The default created with the New* methods is probably
+	// sane for almost all use cases, but exporting this just in case.  If
+	// you need to set this, do it before you start using InTransport as an
+	// http.Roundtripper.
+	IntermediateHTTPClient *http.Client
 
-	Dialer *net.Dialer
-
-	certFetcher *http.Client
-
-	cache Cacher
+	t      *http.Transport
+	tlsc   *tls.Config
+	dialer *net.Dialer
+	cache  Cacher
 }
 
-func (it *inTranspoort) validateOCSP(serverName string, connState *tls.ConnectionState) error {
+// RoundTrip - implement http.RoundTripper interface
+func (it *InTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return it.t.RoundTrip(req)
+}
+
+func (it *InTransport) validateOCSP(serverName string, connState *tls.ConnectionState) error {
 	peers := connState.PeerCertificates
 	if len(peers) == 0 {
 		return ErrNoPeerCerts
@@ -285,26 +295,14 @@ func (it *inTranspoort) validateOCSP(serverName string, connState *tls.Connectio
 	return nil
 }
 
-// lifted from standard library net/http/http.go
-func hasPort(s string) bool { return strings.LastIndex(s, ":") > strings.LastIndex(s, "]") }
-
-// parse of host part in the case of host:port
-func parseHost(host string) (string, error) {
-	if hasPort(host) {
-		h, _, err := net.SplitHostPort(host)
-		return h, err
-	}
-	return host, nil
-}
-
 // verifyPeerCertificate - The difference between this
-// and the default TLS verification is that missing intermediates will be
+// and the default tlsc verification is that missing intermediates will be
 // fetched until either a valid path to a trusted root is found or no further
 // intermediates can be found.  If a chain cannot be established, the
 // connection will fail .  If a chain can be established, then the optional
 // NextVerifyPeerCertificate() method will be called, if specified.  If this
 // method returns an error, it will stop the connection.
-func (it *inTranspoort) verifyPeerCertificate(serverName string, rawCerts [][]byte, _ [][]*x509.Certificate) error {
+func (it *InTransport) verifyPeerCertificate(serverName string, rawCerts [][]byte, _ [][]*x509.Certificate) error {
 	if len(rawCerts) == 0 {
 		return ErrNoCertificates
 	}
@@ -336,7 +334,7 @@ func (it *inTranspoort) verifyPeerCertificate(serverName string, rawCerts [][]by
 
 // verifyChains - this takes cert(s) and does its best to find a path to a recognized root,
 // fetching intermediate certs that may be missing.
-func (it *inTranspoort) verifyChains(serverName string, certs []*x509.Certificate) (chains [][]*x509.Certificate, err error) {
+func (it *InTransport) verifyChains(serverName string, certs []*x509.Certificate) (chains [][]*x509.Certificate, err error) {
 	cp := x509.NewCertPool()
 	if len(certs) > 1 {
 		for _, cert := range certs[1:] {
@@ -352,7 +350,7 @@ func (it *inTranspoort) verifyChains(serverName string, certs []*x509.Certificat
 
 	// Now check the chains.
 	chains, err = certs[0].Verify(x509.VerifyOptions{
-		Roots:         it.TLS.RootCAs,
+		Roots:         it.tlsc.RootCAs,
 		Intermediates: cp,
 		DNSName:       serverName,
 	})
@@ -369,7 +367,7 @@ func (it *inTranspoort) verifyChains(serverName string, certs []*x509.Certificat
 			cp.AddCert(cert)
 		}
 		chains, err = certs[0].Verify(x509.VerifyOptions{
-			Roots:         it.TLS.RootCAs,
+			Roots:         it.tlsc.RootCAs,
 			Intermediates: cp,
 			DNSName:       serverName,
 		})
@@ -381,13 +379,13 @@ func (it *inTranspoort) verifyChains(serverName string, certs []*x509.Certificat
 }
 
 // This attempts to build the missing links of the chain, and returns any intermediates it may have fetched.
-func (it *inTranspoort) buildMissingChain(cert *x509.Certificate) ([]*x509.Certificate, error) {
+func (it *InTransport) buildMissingChain(cert *x509.Certificate) ([]*x509.Certificate, error) {
 	tmpCert := cert
 	var retval []*x509.Certificate
 	var lastError error
 	for i := 0; i < 5; i++ {
 		_, lastError = tmpCert.Verify(x509.VerifyOptions{
-			Roots: it.TLS.RootCAs,
+			Roots: it.tlsc.RootCAs,
 			// We don't care about dns names here
 		})
 		if lastError == nil {
@@ -408,7 +406,7 @@ func (it *inTranspoort) buildMissingChain(cert *x509.Certificate) ([]*x509.Certi
 }
 
 // This grabs the issuing cert from the issuing certificate extension.
-func (it *inTranspoort) fetchIssuingCert(cert *x509.Certificate) (*x509.Certificate, error) {
+func (it *InTransport) fetchIssuingCert(cert *x509.Certificate) (*x509.Certificate, error) {
 	// this attempts to do two things:
 	// 1) avoid stampede problem - minimizes fetches of a cert on cache miss
 	// 2) avoid long locks on the outer map.
@@ -439,7 +437,7 @@ func (it *inTranspoort) fetchIssuingCert(cert *x509.Certificate) (*x509.Certific
 	var fetchedCert *x509.Certificate
 	for _, urlString := range cert.IssuingCertificateURL {
 		var resp *http.Response
-		resp, err = it.certFetcher.Get(urlString)
+		resp, err = it.IntermediateHTTPClient.Get(urlString)
 		if err != nil {
 			continue
 		}
