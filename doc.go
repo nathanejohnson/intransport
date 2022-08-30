@@ -1,7 +1,7 @@
 // Package intransport implements the http RoundTripper interface.  This can
 // be used with, for example, http.Client and httputil.ReverseProxy. This
 // package is meant to allow secure communications with remote hosts that may
-// not fully specify their intermediate certificates on the TLS handshake.
+// not fully specify their intermediate certificates on the tlsc handshake.
 // Most browsers support communication with these hosts by using the issuing
 // certificate URL from the Authority Information Access extension of the cert
 // to fetch any missing intermediates.  Each intermediate is fetched in turn

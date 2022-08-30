@@ -46,7 +46,7 @@ type certCache struct {
 
 // NewMapCache - returns a Cacher implementation based on a go map and mutexes.
 func NewMapCache() Cacher {
-	return &certCache {
+	return &certCache{
 		m: make(map[string]*certCacheEntry),
 	}
 }
@@ -68,9 +68,9 @@ func (cc *certCache) LockedCachedCert(key string) LockedCachedCertRepresenter {
 	return cce
 }
 
-type nopCache struct {}
+type nopCache struct{}
 
-type nopCacheEntry struct {}
+type nopCacheEntry struct{}
 
 // NewNopCache - this returns a nop cache, which can be used to disable caching of certificates.
 func NewNopCache() Cacher {
@@ -81,22 +81,12 @@ func (nc nopCache) LockedCachedCert(_ string) LockedCachedCertRepresenter {
 	return nopCacheEntry{}
 }
 
-func (nce nopCacheEntry) LockEntry() {
-	return
-}
+func (nce nopCacheEntry) LockEntry() {}
 
-func (nce nopCacheEntry) Unlock() {
-	return
-}
+func (nce nopCacheEntry) Unlock() {}
 
-func (nce nopCacheEntry) UnlockCacher() {
-	return
-}
+func (nce nopCacheEntry) UnlockCacher() {}
 
-func (nce nopCacheEntry) Cert() *x509.Certificate {
-	return nil
-}
+func (nce nopCacheEntry) Cert() *x509.Certificate { return nil }
 
-func (nce nopCacheEntry) SetCert(_ *x509.Certificate) {
-	return
-}
+func (nce nopCacheEntry) SetCert(_ *x509.Certificate) {}
